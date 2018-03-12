@@ -1,5 +1,7 @@
 module Charlotte
 
-# package code goes here
+export @code_wasm
+
+include("wasm/compile.jl")
 
 end # module
