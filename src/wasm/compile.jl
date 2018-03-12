@@ -1,6 +1,6 @@
 using Base.Meta
-using WebAssembly: WType, Func, restructure
-using WebAssembly.Instructions
+using WebAssembly, WebAssembly.Instructions
+using WebAssembly: WType, Func
 
 walk(x, inner, outer) = outer(x)
 
@@ -150,7 +150,7 @@ end
 
 function code_wasm(ex, A)
   cinfo, R = code_typed(ex, A)[1]
-  body = towasm_(lower(cinfo)) |> Block |> restructure
+  body = towasm_(lower(cinfo)) |> Block |> WebAssembly.restructure
   Func([WType(T) for T in A.parameters],
        [WType(R)],
        [WType(P) for P in cinfo.slottypes[length(A.parameters)+2:end]],
