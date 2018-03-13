@@ -14,11 +14,10 @@ prepostwalk(f, g, x) = walk(f(x), x -> prepostwalk(f, g, x), g)
 prewalk(f, x)  = prepostwalk(f, identity, x)
 postwalk(f, x) = prepostwalk(identity, f, x)
 
-typeof_(x) = typeof(x)
-typeof_(x::Type) = Type{x}
+deref(x) = x
+deref(x::GlobalRef) = getfield(x.mod, x.name)
 
-exprtype(code::CodeInfo, x) = typeof_(x)
-exprtype(code::CodeInfo, x::GlobalRef) = typeof_(getfield(x.mod, x.name))
+exprtype(code::CodeInfo, x) = typeof(deref(x))
 exprtype(code::CodeInfo, x::Expr) = x.typ
 exprtype(code::CodeInfo, x::QuoteNode) = typeof(x.value)
 exprtype(code::CodeInfo, x::SSAValue) = code.ssavaluetypes[x.id+1]
@@ -62,6 +61,10 @@ end
 
 wasmfuncs = Dict()
 
+int_unary_ops = [
+  (:cttz_int, :ctz)
+]
+
 int_binary_ops = [
   (:add_int, :add),
   (:sub_int, :sub),
@@ -69,6 +72,9 @@ int_binary_ops = [
   (:and_int, :and),
   (:or_int,  :or),
   (:xor_int, :xor),
+  (:shl_int, :shl),
+  (:lshr_int, :shr_u),
+  (:ashr_int, :shr_s),
   (:(===),   :eq),
   (:slt_int, :lt_s),
   (:sle_int, :le_s),
@@ -76,9 +82,31 @@ int_binary_ops = [
   (:ule_int, :le_u),
 ]
 
-for (j, w) in int_binary_ops
+float_unary_ops = [
+  (:abs_float, :abs),
+  (:neg_float, :neg),
+  (:rint_llvm, :nearest),
+]
+
+float_binary_ops = [
+  (:add_float, :add),
+  (:sub_float, :sub),
+  (:mul_float, :mul),
+  (:div_float, :div),
+  (:eq_float,  :eq),
+  (:ne_float,  :ne),
+  (:lt_float,  :lt),
+  (:le_float,  :le),
+]
+
+for (j, w) in vcat(int_unary_ops, float_unary_ops)
+  wasmfuncs[GlobalRef(Base, j)] = function (T)
+    Op(WType(T), w)
+  end
+end
+
+for (j, w) in vcat(int_binary_ops, float_binary_ops)
   wasmfuncs[GlobalRef(Base, j)] = function (A,B)
-    @assert A == B
     Op(WType(A), w)
   end
 end
@@ -91,8 +119,57 @@ wasmfunc(f, xs...) = wasmfuncs[f](xs...)
 
 wasmcalls = Dict()
 
+# Intrinsics without wasm equivalents
+
+wasmcalls[GlobalRef(Base, :muladd_float)] = function (i, x, y, z)
+  xy = Expr(:call, GlobalRef(Base, :mul_float), x, y)
+  xy.typ = exprtype(i, x)
+  Expr(:call, nop,
+    Expr(:call, GlobalRef(Base, :add_float), xy, z))
+end
+
+wasmcalls[GlobalRef(Base, :neg_int)] = function (i, x)
+  Expr(:call, nop,
+    Expr(:call, GlobalRef(Base, :sub_int), exprtype(i, x)(0), x))
+end
+
+wasmcalls[GlobalRef(Base, :flipsign_int)] = function (i, x, y)
+  T = exprtype(i, x)
+  cond = Expr(:call, GlobalRef(Base, :slt_int), x, T(0))
+  sign = Expr(:call, GlobalRef(Base, :select_value), cond, T(-1), T(1))
+  sign.typ = T
+  Expr(:call, nop,
+    Expr(:call, GlobalRef(Base, :mul_int), sign, x))
+end
+
+# TODO: should probably not do this
+wasmcalls[GlobalRef(Base, :check_top_bit)] = function (i, x)
+  nop
+end
+
+# More complex intrinsics
+
 wasmcalls[GlobalRef(Base, :select_value)] = function (i, c, a, b)
   return Expr(:call, Select(), a, b, c)
+end
+
+wasmcalls[GlobalRef(Base, :bitcast)] = function (i, T, x)
+  T isa GlobalRef && (T = getfield(T.mod, T.name))
+  X = exprtype(i, x)
+  @assert sizeof(T) == sizeof(X)
+  Expr(:call, Convert(WType(T), WType(X), :reinterpret), x)
+end
+
+wasmcalls[GlobalRef(Base, :fptosi)] = function (i, T, x)
+  T isa GlobalRef && (T = getfield(T.mod, T.name))
+  X = exprtype(i, x)
+  Expr(:call, Convert(WType(T), WType(X), :trunc_s), x)
+end
+
+wasmcalls[GlobalRef(Base, :sitofp)] = function (i, T, x)
+  T isa GlobalRef && (T = getfield(T.mod, T.name))
+  X = exprtype(i, x)
+  Expr(:call, Convert(WType(T), WType(X), :convert_s), x)
 end
 
 wasmcall(i, f, xs...) =
@@ -101,13 +178,15 @@ wasmcall(i, f, xs...) =
 
 isprimitive(x) = false
 isprimitive(x::GlobalRef) =
-  getfield(x.mod, x.name) isa Core.IntrinsicFunction ||
-  getfield(x.mod, x.name) isa Core.Builtin
+  deref(x) isa Core.IntrinsicFunction ||
+  deref(x) isa Core.Builtin
 
 function lowercalls(c::CodeInfo, code)
   map(code) do x
     prewalk(x) do x
-      if (isexpr(x, :call) && isprimitive(x.args[1]))
+      if isexpr(x, :call) && deref(x.args[1]) == Base.throw
+        trap
+      elseif (isexpr(x, :call) && isprimitive(x.args[1]))
         wasmcall(c, x.args...)
       elseif isexpr(x, :(=)) && x.args[1] isa SlotNumber
         Expr(:call, SetLocal(false, x.args[1].id-2), x.args[2])
@@ -131,7 +210,11 @@ end
 
 iscontrol(ex) = isexpr(ex, :while) || isexpr(ex, :if)
 
-lower(c::CodeInfo) = lowercalls(c, inlinessa(c.code))
+function lower(c::CodeInfo)
+  is = copy(c.code)
+  while is[1] isa NewvarNode shift!(is) end
+  lowercalls(c, inlinessa(is))
+end
 
 # Convert to WASM instructions
 
@@ -150,9 +233,9 @@ function towasm(x, is = Instruction[])
     push!(is, If(towasm_(x.args[2].args), towasm_(x.args[3].args)))
   elseif isexpr(x, :while)
     push!(is, Block([Loop(towasm_(x.args[2].args))]))
-  elseif x isa Number
-    push!(is, Const(x))
-  elseif x isa LineNumberNode
+  elseif deref(x) isa Number
+    push!(is, Const(deref(x)))
+  elseif x isa LineNumberNode || isexpr(x, :inbounds) || isexpr(x, :meta)
   else
     error("Can't convert to wasm: $x")
   end
