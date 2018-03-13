@@ -196,7 +196,7 @@ isprimitive(x::GlobalRef) =
 function lowercalls(c::CodeInfo, code)
   prewalk(code) do x
     if isexpr(x, :call) && deref(x.args[1]) == Base.throw
-      trap
+      unreachable
     elseif (isexpr(x, :call) && isprimitive(x.args[1]))
       wasmcall(c, x.args...)
     elseif isexpr(x, :(=)) && x.args[1] isa SlotNumber
