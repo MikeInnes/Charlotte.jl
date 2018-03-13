@@ -57,6 +57,18 @@ function inlinessa(code)
   return code′
 end
 
+function ssalocals(cinfo, ex)
+  n = length(cinfo.slotnames)
+  ls = Dict{SSAValue,SlotNumber}()
+  ex = prewalk(ex) do x
+    x isa SSAValue || return x
+    haskey(ls, x) && return ls[x]
+    push!(cinfo.slottypes, exprtype(cinfo, x))
+    ls[x] = SlotNumber(n += 1)
+  end
+  return ex
+end
+
 # Julia -> WASM expression
 
 wasmfuncs = Dict()
@@ -182,28 +194,26 @@ isprimitive(x::GlobalRef) =
   deref(x) isa Core.Builtin
 
 function lowercalls(c::CodeInfo, code)
-  map(code) do x
-    prewalk(x) do x
-      if isexpr(x, :call) && deref(x.args[1]) == Base.throw
-        trap
-      elseif (isexpr(x, :call) && isprimitive(x.args[1]))
-        wasmcall(c, x.args...)
-      elseif isexpr(x, :(=)) && x.args[1] isa SlotNumber
-        Expr(:call, SetLocal(false, x.args[1].id-2), x.args[2])
-      elseif x isa SlotNumber
-        Local(x.id-2)
-      elseif isexpr(x, :gotoifnot)
-        Expr(:call, Goto(true, x.args[2]),
-             Expr(:call, GlobalRef(Base, :not_int), x.args[1]))
-      elseif x isa GotoNode
-        Goto(false, x.label)
-      elseif x isa LabelNode
-        Label(x.label)
-      elseif isexpr(x, :return)
-        Expr(:call, Return(), x.args[1])
-      else
-        x
-      end
+  prewalk(code) do x
+    if isexpr(x, :call) && deref(x.args[1]) == Base.throw
+      trap
+    elseif (isexpr(x, :call) && isprimitive(x.args[1]))
+      wasmcall(c, x.args...)
+    elseif isexpr(x, :(=)) && x.args[1] isa SlotNumber
+      Expr(:call, SetLocal(false, x.args[1].id-2), x.args[2])
+    elseif x isa SlotNumber
+      Local(x.id-2)
+    elseif isexpr(x, :gotoifnot)
+      Expr(:call, Goto(true, x.args[2]),
+           Expr(:call, GlobalRef(Base, :not_int), x.args[1]))
+    elseif x isa GotoNode
+      Goto(false, x.label)
+    elseif x isa LabelNode
+      Label(x.label)
+    elseif isexpr(x, :return)
+      Expr(:call, Return(), x.args[1])
+    else
+      x
     end
   end
 end
@@ -213,7 +223,8 @@ iscontrol(ex) = isexpr(ex, :while) || isexpr(ex, :if)
 function lower(c::CodeInfo)
   is = copy(c.code)
   while is[1] isa NewvarNode shift!(is) end
-  lowercalls(c, inlinessa(is))
+  ex = Expr(:block, inlinessa(is)...)
+  lowercalls(c, ssalocals(c, ex))
 end
 
 # Convert to WASM instructions
@@ -244,7 +255,7 @@ end
 
 function code_wasm(ex, A)
   cinfo, R = code_typed(ex, A)[1]
-  body = towasm_(lower(cinfo)) |> Block |> WebAssembly.restructure
+  body = towasm_(lower(cinfo).args) |> Block |> WebAssembly.restructure
   Func([WType(T) for T in A.parameters],
        [WType(R)],
        [WType(P) for P in cinfo.slottypes[length(A.parameters)+2:end]],
