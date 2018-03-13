@@ -168,6 +168,7 @@ end
 wasmcalls[GlobalRef(Base, :bitcast)] = function (i, T, x)
   T isa GlobalRef && (T = getfield(T.mod, T.name))
   X = exprtype(i, x)
+  WType(T) == WType(X) && return Expr(:call, nop, x)
   @assert sizeof(T) == sizeof(X)
   Expr(:call, Convert(WType(T), WType(X), :reinterpret), x)
 end
