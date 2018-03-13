@@ -14,7 +14,11 @@ prepostwalk(f, g, x) = walk(f(x), x -> prepostwalk(f, g, x), g)
 prewalk(f, x)  = prepostwalk(f, identity, x)
 postwalk(f, x) = prepostwalk(identity, f, x)
 
-exprtype(code::CodeInfo, x) = typeof(x)
+typeof_(x) = typeof(x)
+typeof_(x::Type) = Type{x}
+
+exprtype(code::CodeInfo, x) = typeof_(x)
+exprtype(code::CodeInfo, x::GlobalRef) = typeof_(getfield(x.mod, x.name))
 exprtype(code::CodeInfo, x::Expr) = x.typ
 exprtype(code::CodeInfo, x::QuoteNode) = typeof(x.value)
 exprtype(code::CodeInfo, x::SSAValue) = code.ssavaluetypes[x.id+1]
@@ -58,14 +62,21 @@ end
 
 wasmfuncs = Dict()
 
-binary_ops = [
+int_binary_ops = [
   (:add_int, :add),
   (:sub_int, :sub),
-  (:(===), :eq),
+  (:mul_int, :mul),
+  (:and_int, :and),
+  (:or_int,  :or),
+  (:xor_int, :xor),
+  (:(===),   :eq),
   (:slt_int, :lt_s),
-  (:sle_int, :le_s)]
+  (:sle_int, :le_s),
+  (:ult_int, :lt_u),
+  (:ule_int, :le_u),
+]
 
-for (j, w) in binary_ops
+for (j, w) in int_binary_ops
   wasmfuncs[GlobalRef(Base, j)] = function (A,B)
     @assert A == B
     Op(WType(A), w)
