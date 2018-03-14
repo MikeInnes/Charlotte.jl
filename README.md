@@ -4,6 +4,24 @@ Charlotte is an experimental compiler for the [Julia](https://julialang.org/) la
 
 Charlotte's WebAssembly backend currently supports simple numerical kernels, and could be productively used as a sort of scripting language over WASM.
 
+```julia
+julia> relu(x) = x < 0 ? 0 : x
+relu (generic function with 1 method)
+
+julia> relu(x) = ifelse(x < 0, 0, x)
+relu (generic function with 1 method)
+
+julia> @code_wasm relu(1)
+(func (param i64) (result i64)
+  (i64.const 0)
+  (get_local 0)
+  (get_local 0)
+  (i64.const 0)
+  (i64.lt_s)
+  (select)
+  (return))
+```
+
 ## Design
 
 Julia code secretly comes in two dialects:
