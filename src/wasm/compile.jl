@@ -69,6 +69,13 @@ function ssalocals(cinfo, ex)
   return ex
 end
 
+function rmssa(c)
+  is = copy(c.code)
+  while is[1] isa NewvarNode shift!(is) end
+  ex = Expr(:block, inlinessa(is)...)
+  ssalocals(c, ex)
+end
+
 # Julia -> WASM expression
 
 wasmfuncs = Dict()
@@ -221,12 +228,7 @@ end
 
 iscontrol(ex) = isexpr(ex, :while) || isexpr(ex, :if)
 
-function lower(c::CodeInfo)
-  is = copy(c.code)
-  while is[1] isa NewvarNode shift!(is) end
-  ex = Expr(:block, inlinessa(is)...)
-  lowercalls(c, ssalocals(c, ex))
-end
+lower(c::CodeInfo) = lowercalls(c, rmssa(c))
 
 # Convert to WASM instructions
 
@@ -256,7 +258,7 @@ end
 
 function code_wasm(ex, A)
   cinfo, R = code_typed(ex, A)[1]
-  body = towasm_(lower(cinfo).args) |> Block |> WebAssembly.restructure
+  body = towasm_(lower(cinfo).args) |> Block |> WebAssembly.restructure |> WebAssembly.optimise
   Func([WType(T) for T in A.parameters],
        [WType(R)],
        [WType(P) for P in cinfo.slottypes[length(A.parameters)+2:end]],
