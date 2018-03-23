@@ -1,5 +1,10 @@
 # Charlotte
 
+```julia
+Pkg.clone("https://github.com/MikeInnes/WebAssembly.jl")
+Pkg.clone("https://github.com/MikeInnes/Charlotte.jl")
+```
+
 Charlotte is an experimental compiler for the [Julia](https://julialang.org/) language that targets web browsers, via JavaScript and [WebAssembly](https://github.com/MikeInnes/WebAssembly.jl).
 
 Charlotte's WebAssembly backend currently supports simple numerical kernels, and could be productively used as a sort of scripting language over WASM.
