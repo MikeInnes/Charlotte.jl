@@ -1,6 +1,6 @@
 using Base.Meta
 using WebAssembly, WebAssembly.Instructions
-using WebAssembly: WType, Func
+using WebAssembly: WType, Func, Module, Export, Import
 
 walk(x, inner, outer) = outer(x)
 
@@ -232,21 +232,21 @@ lower(c::CodeInfo) = lowercalls(c, rmssa(c))
 
 # Convert to WASM instructions
 
-towasm_(xs, is = Instruction[]) = (foreach(x -> towasm(x, is), xs); is)
+towasm_(m::Module, xs, is = Instruction[]) = (foreach(x -> towasm(m, x, is), xs); is)
 
-function towasm(x, is = Instruction[])
+function towasm(m::Module, x, is = Instruction[])
   if x isa Instruction
     push!(is, x)
   elseif isexpr(x, :block)
-    push!(is, Block(towasm_(x.args)))
+    push!(is, Block(towasm_(m, x.args)))
   elseif isexpr(x, :call) && x.args[1] isa Instruction
-    foreach(x -> towasm(x, is), x.args[2:end])
+    foreach(x -> towasm(m, x, is), x.args[2:end])
     push!(is, x.args[1])
   elseif isexpr(x, :if)
-    towasm(x.args[1], is)
-    push!(is, If(towasm_(x.args[2].args), towasm_(x.args[3].args)))
+    towasm(m, x.args[1], is)
+    push!(is, If(towasm_(m, x.args[2].args), towasm_(m, x.args[3].args)))
   elseif isexpr(x, :while)
-    push!(is, Block([Loop(towasm_(x.args[2].args))]))
+    push!(is, Block([Loop(towasm_(m, x.args[2].args))]))
   elseif deref(x) isa Number
     push!(is, Const(deref(x)))
   elseif x isa LineNumberNode || isexpr(x, :inbounds) || isexpr(x, :meta)
@@ -256,10 +256,14 @@ function towasm(x, is = Instruction[])
   return is
 end
 
-function code_wasm(ex, A)
+funname(f::Function) = Base.function_name(f)
+funname(s::Symbol) = s
+
+function code_wasm(m::Module, ex, A)
   cinfo, R = code_typed(ex, A)[1]
-  body = towasm_(lower(cinfo).args) |> Block |> WebAssembly.restructure |> WebAssembly.optimise
-  Func([WType(T) for T in A.parameters],
+  body = towasm_(m, lower(cinfo).args) |> Block |> WebAssembly.restructure |> WebAssembly.optimise
+  Func(funname(ex),
+       [WType(T) for T in A.parameters],
        [WType(R)],
        [WType(P) for P in cinfo.slottypes[length(A.parameters)+2:end]],
        body)
@@ -268,4 +272,52 @@ end
 macro code_wasm(ex)
   isexpr(ex, :call) || error("@code_wasm f(xs...)")
   :(code_wasm($(esc(ex.args[1])), Base.typesof($(esc.(ex.args[2:end])...))))
+end
+
+"""
+    wasm_module(funpairlist)
+
+Return a compiled WebAssembly module that includes every function defined by `funpairlist`. 
+  
+`funpairlist` is a vector of pairs. Each pair includes the function to include and 
+a tuple type of the arguments to that function. For example, here is the invocation to 
+return a wasm module with the `mathfun` and `anotherfun` included.
+
+    m = wasm_module([mathfun => Tuple{Float64},
+                     anotherfun => Tuple{Int, Float64}])
+"""
+function wasm_module(funpairlist)
+  m = Module()
+  for (fun, tt) in funpairlist
+    push!(m.funcs, code_wasm(m, fun, tt))
+    push!(m.exports, Export(funname(fun), :func))
+  end
+  return m
+end
+
+"""
+    @wasm_import fun(Float64)::Float64 in env
+
+Import the function `fun` from the JavaScript or WebAssembly environment `env`.
+  
+Argument types are given in addition to the return type. The function `fun` can be 
+used in other Julia code. 
+"""
+macro wasm_import(ex)
+  # @import transforms the following:
+  #     @wasm_import sin(Float64)::Float64 in env
+  # into:
+  #     function sin(::Float64)::Float64
+  #         Expr(:meta, :wasm_import, :env, :sin, Float64, [Float64])
+  #         nothing
+  #     end
+  # When `sin` is parsed, this import is added to the imports table for the module.
+  funname = ex.args[2].args[1].args[1]
+  envname = ex.args[3]
+  rettype = ex.args[2].args[2]
+  argtypes = ex.args[2].args[1].args[2:end]
+  funsig = Expr(:call, esc(funname), (Expr(:(::), esc(s)) for s in argtypes)...)
+  Expr(:function, 
+       Expr(:(::), funsig, esc(rettype)), 
+       Expr(:meta, :wasm_import, envname, funname, eval(rettype), eval.(argtypes)))
 end
