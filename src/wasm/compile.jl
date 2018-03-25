@@ -79,54 +79,63 @@ end
 # Julia -> WASM expression
 
 wasmfuncs = Dict()
+opcodes = Dict{String,UInt8}()
 
-int_unary_ops = [
-  (:cttz_int, :ctz)
+int_unary_ops = [       # i32   i64
+  (:cttz_int, :ctz,       0x68, 0x7a)
 ]
 
-int_binary_ops = [
-  (:add_int, :add),
-  (:sub_int, :sub),
-  (:mul_int, :mul),
-  (:and_int, :and),
-  (:or_int,  :or),
-  (:xor_int, :xor),
-  (:shl_int, :shl),
-  (:lshr_int, :shr_u),
-  (:ashr_int, :shr_s),
-  (:(===),   :eq),
-  (:slt_int, :lt_s),
-  (:sle_int, :le_s),
-  (:ult_int, :lt_u),
-  (:ule_int, :le_u),
+int_binary_ops = [      # i32   i64
+  (:add_int,  :add,       0x6a, 0x7c),
+  (:sub_int,  :sub,       0x6b, 0x7d),
+  (:mul_int,  :mul,       0x6c, 0x7e),
+  (:and_int,  :and,       0x71, 0x83),
+  (:or_int,   :or,        0x72, 0x84),
+  (:xor_int,  :xor,       0x73, 0x85),
+  (:shl_int,  :shl,       0x74, 0x86),
+  (:lshr_int, :shr_u,     0x76, 0x88),
+  (:ashr_int, :shr_s,     0x75, 0x87),
+  (:(===),    :eq,        0x46, 0x51),
+  (:slt_int,  :lt_s,      0x48, 0x53),
+  (:sle_int,  :le_s,      0x4c, 0x57),
+  (:ult_int,  :lt_u,      0x49, 0x54),
+  (:ule_int,  :le_u,      0x4d, 0x58),
 ]
 
-float_unary_ops = [
-  (:abs_float, :abs),
-  (:neg_float, :neg),
-  (:rint_llvm, :nearest),
+float_unary_ops = [     # f32   f64
+  (:abs_float, :abs,      0x8b, 0x99),
+  (:neg_float, :neg,      0x8c, 0x9a),
+  (:rint_llvm, :nearest,  0x90, 0x9e),
 ]
 
-float_binary_ops = [
-  (:add_float, :add),
-  (:sub_float, :sub),
-  (:mul_float, :mul),
-  (:div_float, :div),
-  (:eq_float,  :eq),
-  (:ne_float,  :ne),
-  (:lt_float,  :lt),
-  (:le_float,  :le),
+float_binary_ops = [    # f32   f64
+  (:add_float, :add,      0x92, 0xa0),
+  (:sub_float, :sub,      0x93, 0xa1),
+  (:mul_float, :mul,      0x94, 0xa2),
+  (:div_float, :div,      0x95, 0xa3),
+  (:eq_float,  :eq,       0x5b, 0x61),
+  (:ne_float,  :ne,       0x5c, 0x62),
+  (:lt_float,  :lt,       0x5d, 0x63),
+  (:le_float,  :le,       0x5f, 0x65),
 ]
 
-for (j, w) in vcat(int_unary_ops, float_unary_ops)
-  wasmfuncs[GlobalRef(Base, j)] = function (T)
-    Op(WType(T), w)
+for (t,tops) in [("i",int_unary_ops),("f",float_unary_ops)]
+  for (j, w, o32, o64) in tops
+    wasmfuncs[GlobalRef(Base, j)] = function (T)
+      Op(WType(T), w)
+    end
+    opcodes["$(t)32.$(w)"] = o32
+    opcodes["$(t)64.$(w)"] = o64
   end
 end
 
-for (j, w) in vcat(int_binary_ops, float_binary_ops)
-  wasmfuncs[GlobalRef(Base, j)] = function (A,B)
-    Op(WType(A), w)
+for (t,tops) in [("i",int_binary_ops),("f",float_binary_ops)]
+  for (j, w, o32, o64) in int_binary_ops
+    wasmfuncs[GlobalRef(Base, j)] = function (A,B)
+      Op(WType(A), w)
+    end
+    opcodes["$(t)32.$(w)"] = o32
+    opcodes["$(t)64.$(w)"] = o64
   end
 end
 
