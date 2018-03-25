@@ -274,6 +274,18 @@ macro code_wasm(ex)
   :(code_wasm($(esc(ex.args[1])), Base.typesof($(esc.(ex.args[2:end])...))))
 end
 
+"""
+    wasm_module(funpairlist)
+
+Return a compiled WebAssembly module that includes every function defined by `funpairlist`. 
+  
+`funpairlist` is a vector of pairs. Each pair includes the function to include and 
+a tuple type of the arguments to that function. For example, here is the invocation to 
+return a wasm module with the `mathfun` and `anotherfun` included.
+
+    m = wasm_module([mathfun => Tuple{Float64},
+                     anotherfun => Tuple{Int, Float64}])
+"""
 function wasm_module(funpairlist)
   m = Module()
   for (fun, tt) in funpairlist
@@ -283,16 +295,23 @@ function wasm_module(funpairlist)
   return m
 end
 
+"""
+    @wasm_import fun(Float64)::Float64 in env
 
-# @import transforms the following:
-#     @import sin(Float64)::Float64 in env
-# into:
-#     function sin(::Float64)::Float64
-#         Expr(:meta, :wasm_import, :env, :sin, Float64, [Float64])
-#         nothing
-#     end
-# When `sin` is parsed, this import is added to the imports table for the module.
+Import the function `fun` from the JavaScript or WebAssembly environment `env`.
+  
+Argument types are given in addition to the return type. The function `fun` can be 
+used in other Julia code. 
+"""
 macro wasm_import(ex)
+  # @import transforms the following:
+  #     @wasm_import sin(Float64)::Float64 in env
+  # into:
+  #     function sin(::Float64)::Float64
+  #         Expr(:meta, :wasm_import, :env, :sin, Float64, [Float64])
+  #         nothing
+  #     end
+  # When `sin` is parsed, this import is added to the imports table for the module.
   funname = ex.args[2].args[1].args[1]
   envname = ex.args[3]
   rettype = ex.args[2].args[2]
