@@ -6,18 +6,22 @@ using Base.Test
 
 @wasm_import sin(Float64)::Float64 in env
 
-# dump(code_typed(sin, Tuple{Float64}))
-
 function mathfun(x)
     # x + sin(x)
     2x
 end
+function mathfun2(x, y)
+    2x + y
+end
 
-m = wasm_module([mathfun => Tuple{Float64}])
+
+m = wasm_module([mathfun => Tuple{Float64},
+                 mathfun2 => Tuple{Float64, Float64}])
 f = m.funcs[1]
 ## Better UI:
 # m = @wasm begin
 #     mathfun(Float64)
+#     mathfun2(Float64, Float64)
 #     # Enter more functions here...
 # end
 
