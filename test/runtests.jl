@@ -2,11 +2,11 @@ using Charlotte
 using Base.Test
 
 
-@testset "Import" begin
+# @testset "Import" begin
 
 @wasm_import sin(Float64)::Float64 in env
 
-dump(code_typed(sin, Tuple{Float64}))
+# dump(code_typed(sin, Tuple{Float64}))
 
 function mathfun(x)
     # x + sin(x)
@@ -14,7 +14,7 @@ function mathfun(x)
 end
 
 m = wasm_module([mathfun => Tuple{Float64}])
-
+f = m.funcs[1]
 ## Better UI:
 # m = @wasm begin
 #     mathfun(Float64)
@@ -24,4 +24,4 @@ m = wasm_module([mathfun => Tuple{Float64}])
 # write("test.wat", m)
 
 
-end
+# end

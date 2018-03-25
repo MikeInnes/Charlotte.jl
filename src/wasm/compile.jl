@@ -232,21 +232,21 @@ lower(c::CodeInfo) = lowercalls(c, rmssa(c))
 
 # Convert to WASM instructions
 
-towasm_(xs, is = Instruction[]) = (foreach(x -> towasm(x, is), xs); is)
+towasm_(m::Module, xs, is = Instruction[]) = (foreach(x -> towasm(m, x, is), xs); is)
 
-function towasm(x, is = Instruction[])
+function towasm(m::Module, x, is = Instruction[])
   if x isa Instruction
     push!(is, x)
   elseif isexpr(x, :block)
-    push!(is, Block(towasm_(x.args)))
+    push!(is, Block(towasm_(m, x.args)))
   elseif isexpr(x, :call) && x.args[1] isa Instruction
-    foreach(x -> towasm(x, is), x.args[2:end])
+    foreach(x -> towasm(m, x, is), x.args[2:end])
     push!(is, x.args[1])
   elseif isexpr(x, :if)
-    towasm(x.args[1], is)
-    push!(is, If(towasm_(x.args[2].args), towasm_(x.args[3].args)))
+    towasm(m, x.args[1], is)
+    push!(is, If(towasm_(m, x.args[2].args), towasm_(m, x.args[3].args)))
   elseif isexpr(x, :while)
-    push!(is, Block([Loop(towasm_(x.args[2].args))]))
+    push!(is, Block([Loop(towasm_(m, x.args[2].args))]))
   elseif deref(x) isa Number
     push!(is, Const(deref(x)))
   elseif x isa LineNumberNode || isexpr(x, :inbounds) || isexpr(x, :meta)
@@ -261,7 +261,7 @@ funname(s::Symbol) = s
 
 function code_wasm(m::Module, ex, A)
   cinfo, R = code_typed(ex, A)[1]
-  body = towasm_(lower(cinfo).args) |> Block |> WebAssembly.restructure |> WebAssembly.optimise
+  body = towasm_(m, lower(cinfo).args) |> Block |> WebAssembly.restructure |> WebAssembly.optimise
   Func(funname(ex),
        [WType(T) for T in A.parameters],
        [WType(R)],
@@ -301,8 +301,4 @@ macro wasm_import(ex)
   Expr(:function, 
        Expr(:(::), funsig, esc(rettype)), 
        Expr(:meta, :wasm_import, envname, funname, eval(rettype), eval.(argtypes)))
-  # fun = :( $(esc(funname))()::$(esc(rettype)) = nothing )
-  # Base.pushmeta!(fun, envname, funname, esc(rettype), esc.(argtypes))
-  # append!(fun.args[1].args[1].args, Expr(:(::), esc(s)) for s in argtypes)
-  # fun
 end
