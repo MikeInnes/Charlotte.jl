@@ -1,6 +1,6 @@
 using Base.Meta
 using WebAssembly, WebAssembly.Instructions
-using WebAssembly: WType, Func
+using WebAssembly: WType, Func, Module, Export, Import
 
 walk(x, inner, outer) = outer(x)
 
@@ -256,10 +256,14 @@ function towasm(x, is = Instruction[])
   return is
 end
 
-function code_wasm(ex, A)
+funname(f::Function) = Base.function_name(f)
+funname(s::Symbol) = s
+
+function code_wasm(m::Module, ex, A)
   cinfo, R = code_typed(ex, A)[1]
   body = towasm_(lower(cinfo).args) |> Block |> WebAssembly.restructure |> WebAssembly.optimise
-  Func([WType(T) for T in A.parameters],
+  Func(funname(ex),
+       [WType(T) for T in A.parameters],
        [WType(R)],
        [WType(P) for P in cinfo.slottypes[length(A.parameters)+2:end]],
        body)
@@ -268,4 +272,37 @@ end
 macro code_wasm(ex)
   isexpr(ex, :call) || error("@code_wasm f(xs...)")
   :(code_wasm($(esc(ex.args[1])), Base.typesof($(esc.(ex.args[2:end])...))))
+end
+
+function wasm_module(funpairlist)
+  m = Module()
+  for (fun, tt) in funpairlist
+    push!(m.funcs, code_wasm(m, fun, tt))
+    push!(m.exports, Export(funname(fun), :func))
+  end
+  return m
+end
+
+
+# @import transforms the following:
+#     @import sin(Float64)::Float64 in env
+# into:
+#     function sin(::Float64)::Float64
+#         Expr(:meta, :wasm_import, :env, :sin, Float64, [Float64])
+#         nothing
+#     end
+# When `sin` is parsed, this import is added to the imports table for the module.
+macro wasm_import(ex)
+  funname = ex.args[2].args[1].args[1]
+  envname = ex.args[3]
+  rettype = ex.args[2].args[2]
+  argtypes = ex.args[2].args[1].args[2:end]
+  funsig = Expr(:call, esc(funname), (Expr(:(::), esc(s)) for s in argtypes)...)
+  Expr(:function, 
+       Expr(:(::), funsig, esc(rettype)), 
+       Expr(:meta, :wasm_import, envname, funname, eval(rettype), eval.(argtypes)))
+  # fun = :( $(esc(funname))()::$(esc(rettype)) = nothing )
+  # Base.pushmeta!(fun, envname, funname, esc(rettype), esc.(argtypes))
+  # append!(fun.args[1].args[1].args, Expr(:(::), esc(s)) for s in argtypes)
+  # fun
 end
