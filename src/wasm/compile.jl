@@ -201,11 +201,13 @@ isprimitive(x::GlobalRef) =
   deref(x) isa Core.IntrinsicFunction ||
   deref(x) isa Core.Builtin
 
-function lowercalls(c::CodeInfo, code)
+function lowercalls(m::Module, c::CodeInfo, code)
   prewalk(code) do x
     if isexpr(x, :call) && deref(x.args[1]) == Base.throw
       unreachable
     elseif (isexpr(x, :call) && isprimitive(x.args[1]))
+      wasmcall(c, x.args...)
+    elseif isexpr(x, :invoke)
       wasmcall(c, x.args...)
     elseif isexpr(x, :(=)) && x.args[1] isa SlotNumber
       Expr(:call, SetLocal(false, x.args[1].id-2), x.args[2])
@@ -228,7 +230,7 @@ end
 
 iscontrol(ex) = isexpr(ex, :while) || isexpr(ex, :if)
 
-lower(c::CodeInfo) = lowercalls(c, rmssa(c))
+lower(m::Module, c::CodeInfo) = lowercalls(m, c, rmssa(c))
 
 # Convert to WASM instructions
 
@@ -261,7 +263,7 @@ funname(s::Symbol) = s
 
 function code_wasm(m::Module, ex, A)
   cinfo, R = code_typed(ex, A)[1]
-  body = towasm_(m, lower(cinfo).args) |> Block |> WebAssembly.restructure |> WebAssembly.optimise
+  body = towasm_(m, lower(m, cinfo).args) |> Block |> WebAssembly.restructure |> WebAssembly.optimise
   Func(funname(ex),
        [WType(T) for T in A.parameters],
        [WType(R)],
@@ -289,8 +291,9 @@ return a wasm module with the `mathfun` and `anotherfun` included.
 function wasm_module(funpairlist)
   m = Module()
   for (fun, tt) in funpairlist
-    push!(m.funcs, code_wasm(m, fun, tt))
-    push!(m.exports, Export(funname(fun), :func))
+    fnname = funname(fun)
+    m.funcs[fnname] = code_wasm(m, fun, tt)
+    m.exports[fnname] = Export(fnname, :func)
   end
   return m
 end
@@ -309,7 +312,6 @@ macro wasm_import(ex)
   # into:
   #     function sin(::Float64)::Float64
   #         Expr(:meta, :wasm_import, :env, :sin, Float64, [Float64])
-  #         nothing
   #     end
   # When `sin` is parsed, this import is added to the imports table for the module.
   funname = ex.args[2].args[1].args[1]

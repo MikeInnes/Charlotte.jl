@@ -17,7 +17,7 @@ end
 
 m = wasm_module([mathfun => Tuple{Float64},
                  mathfun2 => Tuple{Float64, Float64}])
-f = m.funcs[1]
+f = first(m.funcs)
 ## Better UI:
 # m = @wasm begin
 #     mathfun(Float64)
