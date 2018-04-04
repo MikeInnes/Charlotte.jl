@@ -208,7 +208,7 @@ function lowercalls(m::Module, c::CodeInfo, code)
     elseif (isexpr(x, :call) && isprimitive(x.args[1]))
       wasmcall(c, x.args...)
     elseif isexpr(x, :invoke)
-      wasmcall(c, x.args...)
+      lower_invoke(m, x.args)
     elseif isexpr(x, :(=)) && x.args[1] isa SlotNumber
       Expr(:call, SetLocal(false, x.args[1].id-2), x.args[2])
     elseif x isa SlotNumber
@@ -227,6 +227,36 @@ function lowercalls(m::Module, c::CodeInfo, code)
     end
   end
 end
+
+function lower_invoke(m::Module, args)
+  # This lowers the function invoked. `args` is the Any[] from the :invoke Expr. 
+  # If the function has not been compiled, compile it. 
+  # Generate the WASM call.
+  tt = argtypes(args[1])
+  name = createfunname(args[1], tt)
+  if haskey(m.funcs, name)
+    func = m.funcs[name]
+  else
+    mi = args[1]
+    ci = Base.uncompressed_ast(mi.def, mi.inferred)
+    R = mi.rettype
+    func = m.funcs[name] = code_wasm(m::Module, basename(mi), tt, ci, R)
+  end
+  return Expr(:call, Call(name), args[3:end]...)
+end
+
+argtypes(x::Core.MethodInstance) = Tuple{x.specTypes.parameters[2:end]...}
+argtypes(x::Method) = Tuple{x.sig.parameters[2:end]...}
+
+createfunname(fun::Function, argtypes) = createfunname(typeof(fun), argtypes)
+createfunname(funtyp::DataType, argtypes) = Symbol(funtyp, "_", join(collect(argtypes.parameters), "_"))
+createfunname(mi::Core.MethodInstance, argtypes) = createfunname(mi.def.sig.parameters[1], argtypes)
+
+basename(f::Function) = Base.function_name(f)
+basename(f::Core.IntrinsicFunction) = Symbol(unsafe_string(ccall(:jl_intrinsic_name, Cstring, (Core.IntrinsicFunction,), f)))
+basename(x::GlobalRef) = x.name
+basename(m::Core.MethodInstance) = basename(m.def)
+basename(m::Method) = m.name == :Type ? m.sig.parameters[1].parameters[1].name.name : m.name
 
 iscontrol(ex) = isexpr(ex, :while) || isexpr(ex, :if)
 
@@ -262,9 +292,14 @@ funname(f::Function) = Base.function_name(f)
 funname(s::Symbol) = s
 
 function code_wasm(m::Module, ex, A)
+  @show ex, A
   cinfo, R = code_typed(ex, A)[1]
+  code_wasm(m, createfunname(ex, A), A, cinfo, R)
+end
+
+function code_wasm(m::Module, name::Symbol, A, cinfo::CodeInfo, R)
   body = towasm_(m, lower(m, cinfo).args) |> Block |> WebAssembly.restructure |> WebAssembly.optimise
-  Func(funname(ex),
+  Func(name,
        [WType(T) for T in A.parameters],
        [WType(R)],
        [WType(P) for P in cinfo.slottypes[length(A.parameters)+2:end]],
@@ -291,9 +326,10 @@ return a wasm module with the `mathfun` and `anotherfun` included.
 function wasm_module(funpairlist)
   m = Module()
   for (fun, tt) in funpairlist
-    fnname = funname(fun)
-    m.funcs[fnname] = code_wasm(m, fun, tt)
-    m.exports[fnname] = Export(fnname, :func)
+    internalname = createfunname(fun, tt)
+    exportedname = funname(fun)
+    m.funcs[internalname] = code_wasm(m, fun, tt)
+    m.exports[exportedname] = Export(exportedname, internalname, :func)
   end
   return m
 end

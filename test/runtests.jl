@@ -6,18 +6,20 @@ using Base.Test
 
 @wasm_import sin(Float64)::Float64 in env
 
-function mathfun(x)
+@noinline function mathfun(x)
     # x + sin(x)
     2x
 end
 function mathfun2(x, y)
-    2x + y
+    3x + mathfun(y)
 end
 
 
 m = wasm_module([mathfun => Tuple{Float64},
                  mathfun2 => Tuple{Float64, Float64}])
 f = first(m.funcs)
+
+
 ## Better UI:
 # m = @wasm begin
 #     mathfun(Float64)
