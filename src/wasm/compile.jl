@@ -240,7 +240,7 @@ function lower_invoke(m::Module, args)
     mi = args[1]
     ci = Base.uncompressed_ast(mi.def, mi.inferred)
     R = mi.rettype
-    func = m.funcs[name] = code_wasm(m::Module, basename(mi), tt, ci, R)
+    func = m.funcs[name] = code_wasm(m::Module, name, tt, ci, R)
   end
   return Expr(:call, Call(name), args[3:end]...)
 end
