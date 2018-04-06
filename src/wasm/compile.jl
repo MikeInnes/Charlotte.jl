@@ -292,7 +292,6 @@ funname(f::Function) = Base.function_name(f)
 funname(s::Symbol) = s
 
 function code_wasm(m::Module, ex, A)
-  @show ex, A
   cinfo, R = code_typed(ex, A)[1]
   code_wasm(m, createfunname(ex, A), A, cinfo, R)
 end
