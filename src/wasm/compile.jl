@@ -237,7 +237,7 @@ function lower_invoke(m::Module, args)
   # Generate the WASM call.
   tt = argtypes(args[1])
   name = createfunname(args[1], tt)
-  if !haskey(m.funcs, name) && !haskey(m.imports, name)
+  if !haskey(m.funcs, name)
     mi = args[1]
     ci = Base.uncompressed_ast(mi.def, mi.inferred)
     R = mi.rettype
