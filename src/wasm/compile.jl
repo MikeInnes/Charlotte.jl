@@ -1,6 +1,7 @@
 using Base.Meta
 using WebAssembly, WebAssembly.Instructions
 using WebAssembly: WType, Func, Module, Export, Import
+import MacroTools
 
 walk(x, inner, outer) = outer(x)
 
@@ -209,6 +210,8 @@ function lowercalls(m::Module, c::CodeInfo, code)
       wasmcall(c, x.args...)
     elseif isexpr(x, :invoke)
       lower_invoke(m, x.args)
+    elseif isexpr(x, :foreigncall)
+      lower_ccall(m, x.args)
     elseif isexpr(x, :(=)) && x.args[1] isa SlotNumber
       Expr(:call, SetLocal(false, x.args[1].id-2), x.args[2])
     elseif x isa SlotNumber
@@ -234,20 +237,26 @@ function lower_invoke(m::Module, args)
   # Generate the WASM call.
   tt = argtypes(args[1])
   name = createfunname(args[1], tt)
-  if haskey(m.funcs, name)
-    func = m.funcs[name]
-  else
+  if !haskey(m.funcs, name) && !haskey(m.imports, name)
     mi = args[1]
     ci = Base.uncompressed_ast(mi.def, mi.inferred)
     R = mi.rettype
-    func = m.funcs[name] = code_wasm(m::Module, name, tt, ci, R)
+    m.funcs[name] = code_wasm(m::Module, name, tt, ci, R)
   end
   return Expr(:call, Call(name), args[3:end]...)
+end
+
+function lower_ccall(m::Module, args)
+  (fnname, env) = args[1]
+  name = Symbol(env, :_, fnname) 
+  m.imports[name] = Import(env, fnname, :func, map(WType, args[3]), WType(args[2]))
+  return Expr(:call, Call(name), args[4:2:end]...)
 end
 
 argtypes(x::Core.MethodInstance) = Tuple{x.specTypes.parameters[2:end]...}
 argtypes(x::Method) = Tuple{x.sig.parameters[2:end]...}
 
+createfunname(fun::Symbol, argtypes) = Symbol(fun, "_", join(collect(argtypes.parameters), "_"))
 createfunname(fun::Function, argtypes) = createfunname(typeof(fun), argtypes)
 createfunname(funtyp::DataType, argtypes) = Symbol(funtyp, "_", join(collect(argtypes.parameters), "_"))
 createfunname(mi::Core.MethodInstance, argtypes) = createfunname(mi.def.sig.parameters[1], argtypes)
@@ -331,30 +340,4 @@ function wasm_module(funpairlist)
     m.exports[exportedname] = Export(exportedname, internalname, :func)
   end
   return m
-end
-
-"""
-    @wasm_import fun(Float64)::Float64 in env
-
-Import the function `fun` from the JavaScript or WebAssembly environment `env`.
-  
-Argument types are given in addition to the return type. The function `fun` can be 
-used in other Julia code. 
-"""
-macro wasm_import(ex)
-  # @import transforms the following:
-  #     @wasm_import sin(Float64)::Float64 in env
-  # into:
-  #     function sin(::Float64)::Float64
-  #         Expr(:meta, :wasm_import, :env, :sin, Float64, [Float64])
-  #     end
-  # When `sin` is parsed, this import is added to the imports table for the module.
-  funname = ex.args[2].args[1].args[1]
-  envname = ex.args[3]
-  rettype = ex.args[2].args[2]
-  argtypes = ex.args[2].args[1].args[2:end]
-  funsig = Expr(:call, esc(funname), (Expr(:(::), esc(s)) for s in argtypes)...)
-  Expr(:function, 
-       Expr(:(::), funsig, esc(rettype)), 
-       Expr(:meta, :wasm_import, envname, funname, eval(rettype), eval.(argtypes)))
 end

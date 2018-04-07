@@ -4,8 +4,6 @@ using Base.Test
 
 # @testset "Import" begin
 
-@wasm_import sin(Float64)::Float64 in env
-
 @noinline function mathfun(x)
     # x + sin(x)
     2x
@@ -20,8 +18,16 @@ end
 
 m = wasm_module([mathfun => Tuple{Float64},
                  mathfun2 => Tuple{Float64, Float64}])
-# f = first(m.funcs)
 
+function docos(x)
+    ccall((:jscos, "imports"), Float64, (Float64,), x)
+end
+m1 = wasm_module([docos => Tuple{Float64}])
+
+function docos2(x)
+    ccall((:jscos, "imports"), Float64, (Float64,Float64), x, 33.3)
+end
+m2 = wasm_module([docos2 => Tuple{Float64}])
 
 ## Better UI:
 # m = @wasm begin
