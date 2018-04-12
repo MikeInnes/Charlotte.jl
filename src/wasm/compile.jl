@@ -1,7 +1,6 @@
 using Base.Meta
 using WebAssembly, WebAssembly.Instructions
 using WebAssembly: WType, Func, Module, Export, Import
-import MacroTools
 
 walk(x, inner, outer) = outer(x)
 
