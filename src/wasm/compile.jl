@@ -2,6 +2,14 @@ using Base.Meta
 using WebAssembly, WebAssembly.Instructions
 using WebAssembly: WType, Func, Module, Export, Import
 
+# This struct stores state as a wasm module is built up.
+struct ModuleState
+  imports::Dict{Symbol, Import}
+  exports::Dict{Symbol, Export}
+  funcs::Dict{Symbol, Func}
+end
+ModuleState() = ModuleState(Dict{Symbol, Import}(), Dict{Symbol, Export}(), Dict{Symbol, Func}())
+
 walk(x, inner, outer) = outer(x)
 
 function walk(x::Expr, inner, outer)
@@ -201,7 +209,7 @@ isprimitive(x::GlobalRef) =
   deref(x) isa Core.IntrinsicFunction ||
   deref(x) isa Core.Builtin
 
-function lowercalls(m::Module, c::CodeInfo, code)
+function lowercalls(m::ModuleState, c::CodeInfo, code)
   prewalk(code) do x
     if isexpr(x, :call) && deref(x.args[1]) == Base.throw
       unreachable
@@ -230,7 +238,7 @@ function lowercalls(m::Module, c::CodeInfo, code)
   end
 end
 
-function lower_invoke(m::Module, args)
+function lower_invoke(m::ModuleState, args)
   # This lowers the function invoked. `args` is the Any[] from the :invoke Expr. 
   # If the function has not been compiled, compile it. 
   # Generate the WASM call.
@@ -240,12 +248,12 @@ function lower_invoke(m::Module, args)
     mi = args[1]
     ci = Base.uncompressed_ast(mi.def, mi.inferred)
     R = mi.rettype
-    m.funcs[name] = code_wasm(m::Module, name, tt, ci, R)
+    m.funcs[name] = code_wasm(m::ModuleState, name, tt, ci, R)
   end
   return Expr(:call, Call(name), args[3:end]...)
 end
 
-function lower_ccall(m::Module, args)
+function lower_ccall(m::ModuleState, args)
   (fnname, env) = args[1]
   name = Symbol(env, :_, fnname) 
   m.imports[name] = Import(env, fnname, :func, map(WType, args[3]), WType(args[2]))
@@ -268,13 +276,13 @@ basename(m::Method) = m.name == :Type ? m.sig.parameters[1].parameters[1].name.n
 
 iscontrol(ex) = isexpr(ex, :while) || isexpr(ex, :if)
 
-lower(m::Module, c::CodeInfo) = lowercalls(m, c, rmssa(c))
+lower(m::ModuleState, c::CodeInfo) = lowercalls(m, c, rmssa(c))
 
 # Convert to WASM instructions
 
-towasm_(m::Module, xs, is = Instruction[]) = (foreach(x -> towasm(m, x, is), xs); is)
+towasm_(m::ModuleState, xs, is = Instruction[]) = (foreach(x -> towasm(m, x, is), xs); is)
 
-function towasm(m::Module, x, is = Instruction[])
+function towasm(m::ModuleState, x, is = Instruction[])
   if x isa Instruction
     push!(is, x)
   elseif isexpr(x, :block)
@@ -299,12 +307,12 @@ end
 funname(f::Function) = Base.function_name(f)
 funname(s::Symbol) = s
 
-function code_wasm(m::Module, ex, A)
+function code_wasm(m::ModuleState, ex, A)
   cinfo, R = code_typed(ex, A)[1]
   code_wasm(m, createfunname(ex, A), A, cinfo, R)
 end
 
-function code_wasm(m::Module, name::Symbol, A, cinfo::CodeInfo, R)
+function code_wasm(m::ModuleState, name::Symbol, A, cinfo::CodeInfo, R)
   body = towasm_(m, lower(m, cinfo).args) |> Block |> WebAssembly.restructure |> WebAssembly.optimise
   Func(name,
        [WType(T) for T in A.parameters],
@@ -321,22 +329,22 @@ end
 """
     wasm_module(funpairlist)
 
-Return a compiled WebAssembly module that includes every function defined by `funpairlist`. 
+Return a compiled WebAssembly ModuleState that includes every function defined by `funpairlist`. 
   
 `funpairlist` is a vector of pairs. Each pair includes the function to include and 
 a tuple type of the arguments to that function. For example, here is the invocation to 
-return a wasm module with the `mathfun` and `anotherfun` included.
+return a wasm ModuleState with the `mathfun` and `anotherfun` included.
 
     m = wasm_module([mathfun => Tuple{Float64},
                      anotherfun => Tuple{Int, Float64}])
 """
 function wasm_module(funpairlist)
-  m = Module()
+  m = ModuleState()
   for (fun, tt) in funpairlist
     internalname = createfunname(fun, tt)
     exportedname = funname(fun)
     m.funcs[internalname] = code_wasm(m, fun, tt)
     m.exports[exportedname] = Export(exportedname, internalname, :func)
   end
-  return m
+  return Module(collect(values(m.imports)), collect(values(m.exports)), collect(values(m.funcs)))
 end
