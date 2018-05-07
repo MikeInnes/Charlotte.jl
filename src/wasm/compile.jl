@@ -1,6 +1,14 @@
 using Base.Meta
 using WebAssembly, WebAssembly.Instructions
-using WebAssembly: WType, Func
+using WebAssembly: WType, Func, Module, Export, Import
+
+# This struct stores state as a wasm module is built up.
+struct ModuleState
+  imports::Dict{Symbol, Import}
+  exports::Dict{Symbol, Export}
+  funcs::Dict{Symbol, Func}
+end
+ModuleState() = ModuleState(Dict{Symbol, Import}(), Dict{Symbol, Export}(), Dict{Symbol, Func}())
 
 walk(x, inner, outer) = outer(x)
 
@@ -201,12 +209,16 @@ isprimitive(x::GlobalRef) =
   deref(x) isa Core.IntrinsicFunction ||
   deref(x) isa Core.Builtin
 
-function lowercalls(c::CodeInfo, code)
+function lowercalls(m::ModuleState, c::CodeInfo, code)
   prewalk(code) do x
     if isexpr(x, :call) && deref(x.args[1]) == Base.throw
       unreachable
     elseif (isexpr(x, :call) && isprimitive(x.args[1]))
       wasmcall(c, x.args...)
+    elseif isexpr(x, :invoke)
+      lower_invoke(m, x.args)
+    elseif isexpr(x, :foreigncall)
+      lower_ccall(m, x.args)
     elseif isexpr(x, :(=)) && x.args[1] isa SlotNumber
       Expr(:call, SetLocal(false, x.args[1].id-2), x.args[2])
     elseif x isa SlotNumber
@@ -226,27 +238,63 @@ function lowercalls(c::CodeInfo, code)
   end
 end
 
+function lower_invoke(m::ModuleState, args)
+  # This lowers the function invoked. `args` is the Any[] from the :invoke Expr. 
+  # If the function has not been compiled, compile it. 
+  # Generate the WASM call.
+  tt = argtypes(args[1])
+  name = createfunname(args[1], tt)
+  if !haskey(m.funcs, name)
+    mi = args[1]
+    ci = Base.uncompressed_ast(mi.def, mi.inferred)
+    R = mi.rettype
+    m.funcs[name] = code_wasm(m::ModuleState, name, tt, ci, R)
+  end
+  return Expr(:call, Call(name), args[3:end]...)
+end
+
+function lower_ccall(m::ModuleState, args)
+  (fnname, env) = args[1]
+  name = Symbol(env, :_, fnname) 
+  m.imports[name] = Import(env, fnname, :func, map(WType, args[3]), WType(args[2]))
+  return Expr(:call, Call(name), args[4:2:end]...)
+end
+
+argtypes(x::Core.MethodInstance) = Tuple{x.specTypes.parameters[2:end]...}
+argtypes(x::Method) = Tuple{x.sig.parameters[2:end]...}
+
+createfunname(fun::Symbol, argtypes) = Symbol(fun, "_", join(collect(argtypes.parameters), "_"))
+createfunname(fun::Function, argtypes) = createfunname(typeof(fun), argtypes)
+createfunname(funtyp::DataType, argtypes) = Symbol(funtyp, "_", join(collect(argtypes.parameters), "_"))
+createfunname(mi::Core.MethodInstance, argtypes) = createfunname(mi.def.sig.parameters[1], argtypes)
+
+basename(f::Function) = Base.function_name(f)
+basename(f::Core.IntrinsicFunction) = Symbol(unsafe_string(ccall(:jl_intrinsic_name, Cstring, (Core.IntrinsicFunction,), f)))
+basename(x::GlobalRef) = x.name
+basename(m::Core.MethodInstance) = basename(m.def)
+basename(m::Method) = m.name == :Type ? m.sig.parameters[1].parameters[1].name.name : m.name
+
 iscontrol(ex) = isexpr(ex, :while) || isexpr(ex, :if)
 
-lower(c::CodeInfo) = lowercalls(c, rmssa(c))
+lower(m::ModuleState, c::CodeInfo) = lowercalls(m, c, rmssa(c))
 
 # Convert to WASM instructions
 
-towasm_(xs, is = Instruction[]) = (foreach(x -> towasm(x, is), xs); is)
+towasm_(m::ModuleState, xs, is = Instruction[]) = (foreach(x -> towasm(m, x, is), xs); is)
 
-function towasm(x, is = Instruction[])
+function towasm(m::ModuleState, x, is = Instruction[])
   if x isa Instruction
     push!(is, x)
   elseif isexpr(x, :block)
-    push!(is, Block(towasm_(x.args)))
+    push!(is, Block(towasm_(m, x.args)))
   elseif isexpr(x, :call) && x.args[1] isa Instruction
-    foreach(x -> towasm(x, is), x.args[2:end])
+    foreach(x -> towasm(m, x, is), x.args[2:end])
     push!(is, x.args[1])
   elseif isexpr(x, :if)
-    towasm(x.args[1], is)
-    push!(is, If(towasm_(x.args[2].args), towasm_(x.args[3].args)))
+    towasm(m, x.args[1], is)
+    push!(is, If(towasm_(m, x.args[2].args), towasm_(m, x.args[3].args)))
   elseif isexpr(x, :while)
-    push!(is, Block([Loop(towasm_(x.args[2].args))]))
+    push!(is, Block([Loop(towasm_(m, x.args[2].args))]))
   elseif deref(x) isa Number
     push!(is, Const(deref(x)))
   elseif x isa LineNumberNode || isexpr(x, :inbounds) || isexpr(x, :meta)
@@ -256,10 +304,18 @@ function towasm(x, is = Instruction[])
   return is
 end
 
-function code_wasm(ex, A)
+funname(f::Function) = Base.function_name(f)
+funname(s::Symbol) = s
+
+function code_wasm(m::ModuleState, ex, A)
   cinfo, R = code_typed(ex, A)[1]
-  body = towasm_(lower(cinfo).args) |> Block |> WebAssembly.restructure |> WebAssembly.optimise
-  Func([WType(T) for T in A.parameters],
+  code_wasm(m, createfunname(ex, A), A, cinfo, R)
+end
+
+function code_wasm(m::ModuleState, name::Symbol, A, cinfo::CodeInfo, R)
+  body = towasm_(m, lower(m, cinfo).args) |> Block |> WebAssembly.restructure |> WebAssembly.optimise
+  Func(name,
+       [WType(T) for T in A.parameters],
        [WType(R)],
        [WType(P) for P in cinfo.slottypes[length(A.parameters)+2:end]],
        body)
@@ -268,4 +324,27 @@ end
 macro code_wasm(ex)
   isexpr(ex, :call) || error("@code_wasm f(xs...)")
   :(code_wasm($(esc(ex.args[1])), Base.typesof($(esc.(ex.args[2:end])...))))
+end
+
+"""
+    wasm_module(funpairlist)
+
+Return a compiled WebAssembly ModuleState that includes every function defined by `funpairlist`. 
+  
+`funpairlist` is a vector of pairs. Each pair includes the function to include and 
+a tuple type of the arguments to that function. For example, here is the invocation to 
+return a wasm ModuleState with the `mathfun` and `anotherfun` included.
+
+    m = wasm_module([mathfun => Tuple{Float64},
+                     anotherfun => Tuple{Int, Float64}])
+"""
+function wasm_module(funpairlist)
+  m = ModuleState()
+  for (fun, tt) in funpairlist
+    internalname = createfunname(fun, tt)
+    exportedname = funname(fun)
+    m.funcs[internalname] = code_wasm(m, fun, tt)
+    m.exports[exportedname] = Export(exportedname, internalname, :func)
+  end
+  return Module(collect(values(m.imports)), collect(values(m.exports)), collect(values(m.funcs)))
 end
