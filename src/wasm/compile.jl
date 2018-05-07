@@ -1,14 +1,15 @@
 using Base.Meta
 using WebAssembly, WebAssembly.Instructions
-using WebAssembly: WType, Func, Module, Export, Import
+using WebAssembly: WType, Func, Module, FuncType, Func, Table, Mem, Global, Elem, Data, Import, Export
 
 # This struct stores state as a wasm module is built up.
 struct ModuleState
   imports::Dict{Symbol, Import}
   exports::Dict{Symbol, Export}
   funcs::Dict{Symbol, Func}
+  data::Dict{Symbol, Data}
 end
-ModuleState() = ModuleState(Dict{Symbol, Import}(), Dict{Symbol, Export}(), Dict{Symbol, Func}())
+ModuleState() = ModuleState(Dict{Symbol, Import}(), Dict{Symbol, Export}(), Dict{Symbol, Func}(), Dict{Symbol, Data}())
 
 walk(x, inner, outer) = outer(x)
 
@@ -346,5 +347,9 @@ function wasm_module(funpairlist)
     m.funcs[internalname] = code_wasm(m, fun, tt)
     m.exports[exportedname] = Export(exportedname, internalname, :func)
   end
-  return Module(collect(values(m.imports)), collect(values(m.exports)), collect(values(m.funcs)))
+  if length(m.data) > 0
+    m.exports[:memory] = Export(:memory, :memory, :memory)
+  end
+  return Module(FuncType[], collect(values(m.funcs)), Table[], [Mem(:m, 1, nothing)], Global[], Elem[],
+                collect(values(m.data)), Ref(0), collect(values(m.imports)), collect(values(m.exports)))
 end
