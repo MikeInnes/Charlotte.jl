@@ -29,6 +29,21 @@ function docos2(x)
 end
 m2 = wasm_module([docos2 => Tuple{Float64}])
 
+# BROKEN stuff to try to test memory
+# const s = "hello"
+# function stringtest()
+#     # length(s)
+#     s[1]
+# end
+# ms = wasm_module([stringtest => Tuple{}])
+# const a = [1,2,3]
+# function arraytest()
+#     a[3]
+# end
+# ma = wasm_module([arraytest => Tuple{}])
+
+# ms = wasm_module([stringtest => Tuple{}])
+
 ## Better UI:
 # m = @wasm begin
 #     mathfun(Float64)
