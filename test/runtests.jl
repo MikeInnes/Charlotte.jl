@@ -1,4 +1,5 @@
 using Charlotte
+using WebAssembly
 using Base.Test
 
 
@@ -55,3 +56,13 @@ m2 = wasm_module([docos2 => Tuple{Float64}])
 
 
 # end
+
+WA = WebAssembly
+
+relu(x) = ifelse(x < 0, 0, x)
+result = @code_wasm relu(1)
+expected = WA.Func(Symbol("#relu_Int64"), [WA.i64], [WA.i64], [], WA.Block([WA.Const(0), WA.Local(0), WA.Local(0), WA.Const(0), WA.Op(WA.i64, :lt_s), WA.Select(), WA.Return()]))
+@test result.params == expected.params
+@test result.returns == expected.returns
+@test result.locals == expected.locals
+@test result.body.body == expected.body.body
