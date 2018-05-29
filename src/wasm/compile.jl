@@ -108,6 +108,10 @@ int_binary_ops = [
   (:sle_int, :le_s),
   (:ult_int, :lt_u),
   (:ule_int, :le_u),
+  (:checked_srem_int, :rem_s),
+  (:checked_urem_int, :rem_u),
+  (:checked_sdiv_int, :div_s),
+  (:checked_udiv_int, :div_u),
 ]
 
 float_unary_ops = [
