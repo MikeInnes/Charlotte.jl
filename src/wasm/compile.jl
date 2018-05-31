@@ -176,7 +176,7 @@ end
 
 # TODO: should probably not do this
 wasmcalls[GlobalRef(Base, :check_top_bit)] = function (i, x)
-  nop
+  Expr(:call, nop, x)
 end
 
 # More complex intrinsics
