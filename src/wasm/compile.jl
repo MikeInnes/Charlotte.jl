@@ -192,7 +192,6 @@ function addLabels(blocks)
 end
 
 function rmssa(c)
-  @show c
   is = copy(c.code)
   while is[1] isa NewvarNode shift!(is) end
   ex = Expr(:block, inlinessa(is)...)
@@ -218,6 +217,7 @@ int_binary_ops = [
   (:lshr_int, :shr_u),
   (:ashr_int, :shr_s),
   (:(===),   :eq),
+  (:eq_int,  :eq),
   (:slt_int, :lt_s),
   (:sle_int, :le_s),
   (:ult_int, :lt_u),
@@ -253,11 +253,20 @@ for (j, w) in vcat(int_binary_ops, float_binary_ops)
   end
 end
 
-wasmfuncs[GlobalRef(Base, :not_int)] = function (A)
-  # if A is
-  # if A isa pair
-  #   Op(WType(A[2]))
+for (j, w) in vcat(int_unary_ops, float_unary_ops)
+  wasmfuncs[GlobalRef(Core, j)] = function (T)
+    Op(WType(T), w)
+  end
+end
 
+for (j, w) in vcat(int_binary_ops, float_binary_ops)
+  wasmfuncs[GlobalRef(Core, j)] = function (A,B)
+    Op(WType(A), w)
+    # Op(WType(Int32), w)
+  end
+end
+
+wasmfuncs[GlobalRef(Base, :not_int)] = function (A)
   Op(WType(A), :eqz)
 end
 
@@ -282,7 +291,7 @@ end
 wasmcalls[GlobalRef(Base, :flipsign_int)] = function (i, x, y)
   T = exprtype(i, x)
   cond = Expr(:call, GlobalRef(Base, :slt_int), x, T(0))
-  sign = Expr(:call, GlobalRef(Base, :select_value), cond, T(-1), T(1))
+  sign = Expr(:call, GlobalRef(Base, :ifelse), cond, T(-1), T(1))
   sign.typ = T
   Expr(:call, nop,
     Expr(:call, GlobalRef(Base, :mul_int), sign, x))
@@ -295,7 +304,7 @@ end
 
 # More complex intrinsics
 
-wasmcalls[GlobalRef(Base, :select_value)] = function (i, c, a, b)
+wasmcalls[GlobalRef(Base, :ifelse)] = function (i, c, a, b)
   return Expr(:call, Select(), a, b, c)
 end
 
@@ -305,6 +314,16 @@ wasmcalls[GlobalRef(Base, :bitcast)] = function (i, T, x)
   WType(T) == WType(X) && return Expr(:call, nop, x)
   @assert sizeof(T) == sizeof(X)
   Expr(:call, Convert(WType(T), WType(X), :reinterpret), x)
+end
+
+# Just try having it exactly the same who knows.
+wasmcalls[GlobalRef(Core, :trunc_int)] = function (i, T, x)
+  Expr(:call, nop, x)
+  # T isa GlobalRef && (T = getfield(T.mod, T.name))
+  # X = exprtype(i, x)
+  # WType(T) == WType(X) && return Expr(:call, nop, x)
+  # @assert sizeof(T) == sizeof(X)
+  # Expr(:call, Convert(WType(T), WType(X), :reinterpret), x)
 end
 
 wasmcalls[GlobalRef(Base, :fptosi)] = function (i, T, x)
@@ -330,7 +349,6 @@ isprimitive(x::GlobalRef) =
 
 function lowercalls(m::ModuleState, c::IRCode, code)
   num_args = length(c.argtypes)
-  @show c.argtypes
   prewalk(code) do x
     # @show x, typeof(x)
     if isexpr(x, :call) && deref(x.args[1]) == Base.throw
@@ -342,11 +360,10 @@ function lowercalls(m::ModuleState, c::IRCode, code)
     elseif isexpr(x, :foreigncall)
       lower_ccall(m, x.args)
     elseif isexpr(x, :(=)) && x.args[1] isa SSAValue
-      Expr(:call, SetLocal(false, x.args[1].id + num_args), x.args[2])
+      Expr(:call, SetLocal(false, x.args[1].id + num_args -1), x.args[2])
     elseif x isa SSAValue
-      Local(x.id+num_args)
+      Local(x.id+num_args-1)
     elseif x isa Argument
-      @show x
       @show Local(x.n-2)
     elseif x isa Compiler.GotoIfNot
       # typ = x.cond isa Argument ? c.argtypes[x.cond.n] : x.cond isa SSAValue ? c.types[x.cond.id] : typeof(x.cond)
@@ -373,6 +390,7 @@ function lower_invoke(m::ModuleState, args)
   # Generate the WASM call.
   tt = argtypes(args[1])
   name = createfunname(args[1], tt)
+  @show keys(m.funcs)
   if !haskey(m.funcs, name)
     mi = args[1]
     ci = Base.uncompressed_ast(mi.def, mi.inferred)
@@ -392,10 +410,12 @@ end
 argtypes(x::Core.MethodInstance) = Tuple{x.specTypes.parameters[2:end]...}
 argtypes(x::Method) = Tuple{x.sig.parameters[2:end]...}
 
+createfunname(fun::Symbol, argtypes::UnionAll) = Symbol(fun, "_", join(argtypes, "_"))
 createfunname(fun::Symbol, argtypes) = Symbol(fun, "_", join(collect(argtypes.parameters), "_"))
-createfunname(fun::Function, argtypes) = createfunname(typeof(fun), argtypes)
-createfunname(funtyp::DataType, argtypes) = Symbol(funtyp, "_", join(collect(argtypes.parameters), "_"))
-createfunname(mi::Core.MethodInstance, argtypes) = createfunname(mi.def.sig.parameters[1], argtypes)
+createfunname(fun::Function, argtypes) = createfunname(funname(fun), argtypes)
+# createfunname(funtyp::DataType, argtypes) = Symbol(funtyp, "_", join(collect(argtypes.parameters), "_"))
+# createfunname(mi::Core.MethodInstance, argtypes) = createfunname(mi.def.sig.parameters[1], argtypes)
+createfunname(mi::Core.MethodInstance, argtypes) = createfunname(mi.def.name, argtypes)
 
 basename(f::Function) = Base.function_name(f)
 basename(f::Core.IntrinsicFunction) = Symbol(unsafe_string(ccall(:jl_intrinsic_name, Cstring, (Core.IntrinsicFunction,), f)))
@@ -449,11 +469,18 @@ function code_wasm(m::ModuleState, ex, A)
 end
 
 function code_wasm(m::ModuleState, name::Symbol, A, cinfo::CodeInfo, R)
-  body = towasm_(m, @show lower(m, Core.Compiler.inflate_ir(cinfo)).args) |> Block |> WebAssembly.restructure |> WebAssembly.optimise
+  ircode = Core.Compiler.inflate_ir(cinfo)
+
+  # This is being calculated twice but once the register allocation is changed
+  # it won't work anymore anyway.
+  used = Base.IdSet{Int}()
+  foreach(stmt->Core.Compiler.scan_ssa_use!(push!, used, stmt), ircode.stmts)
+
+  body = towasm_(m, lower(m, ircode).args) |> Block |> WebAssembly.restructure |> WebAssembly.optimise
   Func(name,
        [WType(T) for T in A.parameters],
        [WType(R)],
-       [WType(P) for P in cinfo.slottypes[length(A.parameters)+2:end]],
+       [WType(i ∈ used ? ircode.types[i] : Int32) for i in eachindex(ircode.types)],
        body)
 end
 
@@ -479,6 +506,7 @@ function wasm_module(funpairlist)
   for (fun, tt) in funpairlist
     internalname = createfunname(fun, tt)
     exportedname = funname(fun)
+    m.funcs[internalname] = WebAssembly.Func(:idontknowdoi,[],[],[],WebAssembly.Block([]))
     m.funcs[internalname] = code_wasm(m, fun, tt)
     m.exports[exportedname] = Export(exportedname, internalname, :func)
   end
