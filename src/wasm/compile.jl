@@ -378,6 +378,8 @@ function lowercalls(m::ModuleState, c::IRCode, code)
       Label(x.label)
     elseif x isa Core.Compiler.ReturnNode
       Expr(:call, Return(), x.val)
+    elseif x isa Nothing
+      Expr(:call, Nop())
     else
       x
     end
@@ -452,8 +454,6 @@ function towasm(m::ModuleState, x, is = Instruction[])
   elseif deref(x) isa Number
     push!(is, Const(deref(x)))
   elseif x isa LineNumberNode || isexpr(x, :inbounds) || isexpr(x, :meta)
-  elseif x isa Nothing
-    push!(is, Nop())
   else
     error("Can't convert to wasm: $x")
   end
