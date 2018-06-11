@@ -171,7 +171,7 @@ function rmPhiNodes(ir)
             end
           end
           if !inserted
-            push!(blocked[phi.edges[i]], Expr(:(=), stmt.args[1], phi.values[i]))
+            pushfirst!(blocked[phi.edges[i]], Expr(:(=), stmt.args[1], phi.values[i]))
           end
         end
       end
@@ -364,7 +364,7 @@ function lowercalls(m::ModuleState, c::IRCode, code)
     elseif x isa SSAValue
       Local(x.id+num_args-1)
     elseif x isa Argument
-      @show Local(x.n-2)
+      Local(x.n-2)
     elseif x isa Compiler.GotoIfNot
       # typ = x.cond isa Argument ? c.argtypes[x.cond.n] : x.cond isa SSAValue ? c.types[x.cond.id] : typeof(x.cond)
       # Expr(:call, Goto(true, x.dest),
@@ -428,8 +428,9 @@ basename(m::Method) = m.name == :Type ? m.sig.parameters[1].parameters[1].name.n
 iscontrol(ex) = isexpr(ex, :while) || isexpr(ex, :if)
 
 function dePhi(c)
+
   addVars(c.stmts)
-  Expr(:block, addLabels(rmPhiNodes(c))...)
+  @show Expr(:block, addLabels(rmPhiNodes(c))...)
 end
 
 lower(m::ModuleState, c::IRCode) = lowercalls(m, c, dePhi(c))
