@@ -308,6 +308,10 @@ wasmcalls[GlobalRef(Base, :ifelse)] = function (i, c, a, b)
   return Expr(:call, Select(), a, b, c)
 end
 
+wasmcalls[GlobalRef(Main, :ifelse)] = function (i, c, a, b)
+  return Expr(:call, Select(), a, b, c)
+end
+
 wasmcalls[GlobalRef(Base, :bitcast)] = function (i, T, x)
   T isa GlobalRef && (T = getfield(T.mod, T.name))
   X = exprtype(i, x)
@@ -316,15 +320,15 @@ wasmcalls[GlobalRef(Base, :bitcast)] = function (i, T, x)
   Expr(:call, Convert(WType(T), WType(X), :reinterpret), x)
 end
 
-# Just try having it exactly the same who knows.
-wasmcalls[GlobalRef(Core, :trunc_int)] = function (i, T, x)
-  Expr(:call, nop, x)
-  # T isa GlobalRef && (T = getfield(T.mod, T.name))
-  # X = exprtype(i, x)
-  # WType(T) == WType(X) && return Expr(:call, nop, x)
-  # @assert sizeof(T) == sizeof(X)
-  # Expr(:call, Convert(WType(T), WType(X), :reinterpret), x)
-end
+# # Just try having it exactly the same who knows.
+# wasmcalls[GlobalRef(Core, :trunc_int)] = function (i, T, x)
+#   Expr(:call, nop, x)
+#   # T isa GlobalRef && (T = getfield(T.mod, T.name))
+#   # X = exprtype(i, x)
+#   # WType(T) == WType(X) && return Expr(:call, nop, x)
+#   # @assert sizeof(T) == sizeof(X)
+#   # Expr(:call, Convert(WType(T), WType(X), :reinterpret), x)
+# end
 
 wasmcalls[GlobalRef(Base, :fptosi)] = function (i, T, x)
   T isa GlobalRef && (T = getfield(T.mod, T.name))
