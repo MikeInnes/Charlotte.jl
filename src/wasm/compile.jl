@@ -1,6 +1,25 @@
 using Base.Meta
+import Base: CodeInfo, SSAValue, SlotNumber, GotoNode, NewvarNode, LabelNode
 using WebAssembly, WebAssembly.Instructions
-using WebAssembly: WType, Func, Module, FuncType, Func, Table, Mem, Global, Elem, Data, Import, Export
+using WebAssembly: WType, Func, Module, FuncType, Func, Table, Mem, Global, Elem, Data, Import, Export, Block
+
+using Core.Compiler: Argument
+using Core.Compiler
+import Core: SSAValue
+import Core.Compiler: IRCode, IncrementalCompact, UseRef, UseRefIterator, StmtRange
+
+for T in :[IRCode, IncrementalCompact, UseRef, UseRefIterator].args
+  @eval begin
+    Base.getindex(ir::$T, a...) = Compiler.getindex(ir, a...)
+    Base.setindex!(ir::$T, a...) = Compiler.setindex!(ir, a...)
+  end
+end
+
+Base.getindex(r::StmtRange, i) = (r.first:r.last)[i]
+
+for T in :[UseRefIterator, IncrementalCompact, Pair].args
+  @eval Base.iterate(x::Compiler.$T, a...) = Compiler.iterate(x, a...)
+end
 
 # This struct stores state as a wasm module is built up.
 struct ModuleState
@@ -32,50 +51,144 @@ exprtype(code::CodeInfo, x::QuoteNode) = typeof(x.value)
 exprtype(code::CodeInfo, x::SSAValue) = code.ssavaluetypes[x.id+1]
 exprtype(code::CodeInfo, x::SlotNumber) = code.slottypes[x.id]
 
-# We don't want SSAValues on a stack machine.
-# If it's only used once, just inline it.
-# If more than once, we have to turn it into a local.
-
-function ssacounts(code)
-  counts = Dict{SSAValue,Any}()
-  inc(x) = counts[x] = get(counts, x, 0) + 1
-  for c in code
-    isexpr(c, :(=)) && (c = c.args[2])
-    prewalk(x -> (x isa SSAValue && inc(x); x), c)
-  end
-  return counts
-end
+exprtype(code::IRCode, x) = typeof(deref(x))
+exprtype(code::IRCode, x::Expr) = x.typ
+exprtype(code::IRCode, x::QuoteNode) = typeof(x.value)
+exprtype(code::IRCode, x::SSAValue) = code.types[x.id]
+exprtype(code::IRCode, x::Argument) = code.argtypes[x.n]
+# exprtype(code::CodeInfo, x::SlotNumber) = code.slottypes[x.id]
 
 apply_rhs(f, x) =
     isexpr(x, :(=)) ?
       Expr(:(=), x.args[1], f(x.args[2])) :
       f(x)
 
-function inlinessa(code)
-  counts = ssacounts(code)
-  values = Dict{SSAValue,Any}()
-  code′ = []
-  for c in code
-    c = apply_rhs(c) do x
-      prewalk(x -> get(values, x, x), x)
-    end
-    isexpr(c, :(=)) && c.args[1] isa SSAValue && counts[c.args[1]] == 1 ?
-      (values[c.args[1]] = c.args[2]) :
-      push!(code′, c)
+function symbolmap(f, stmt)
+  urs = Core.Compiler.userefs(stmt)
+  for op in urs
+    val = op[]
+    op[] = f(val)
   end
-  return code′
+  return urs[]
 end
 
-function ssalocals(cinfo, ex)
-  n = length(cinfo.slotnames)
-  ls = Dict{SSAValue,SlotNumber}()
-  ex = prewalk(ex) do x
-    x isa SSAValue || return x
-    haskey(ls, x) && return ls[x]
-    push!(cinfo.slottypes, exprtype(cinfo, x))
-    ls[x] = SlotNumber(n += 1)
+function ssawalk(f, stmts)
+  for i in eachindex(stmts)
+    stmts[i] = symbolmap(f, stmts[i])
   end
-  return ex
+  return stmts
+end
+
+function rmCompilerArgs(stmts)
+  isArg(x) = x isa Core.Compiler.Argument
+  for i in eachindex(stmts)
+    stmts[i] = symbolmap(stmts[i]) do x
+      # return (isArg(x) ? Symbol("_$(x.n - 2)") : x)
+      return (isArg(x) ? SlotNumber(x.n - 2) : x)
+      # @show x
+    end
+  end
+end
+
+
+function addVar(i, stmt, used)
+  # for i in eachindex(code.stmts)
+
+
+
+  if i in used
+    # return Expr(:(=), Symbol("_$(i + num_args)"), stmt)
+    # return Expr(:(=), SlotNumber(i + num_args), stmt)
+    return Expr(:(=), SSAValue(i), stmt)
+  else
+    return stmt
+  end
+end
+
+
+function addVars(stmts)
+  used = Base.IdSet{Int}()
+  foreach(stmt->Core.Compiler.scan_ssa_use!(push!, used, stmt), stmts)
+  for i in eachindex(stmts)
+    stmts[i] = addVar(i, stmts[i], used)
+  end
+end
+
+
+# symbolmap(p_ir.stmts[2])
+
+# @show p_ir.stmts
+
+# Hold on to this because it shows how to construct a quote
+# function toquote(code)
+#   statements = []
+#   for i in eachindex(code.stmts)
+#     s = code.stmts[i]
+#     push!(statements, toexpr(i, code))
+#   end
+#   return Expr(:block, statements...)
+# end
+#
+# pq = toquote(p_ir)
+# @show rmssa(pq)
+
+# Now that we've removed the SSAValues (TODO: Remove Compiler Args), remove
+# restructure into array of arrays (the blocks), append assignements to the
+# end of each block.
+
+# Ideally there would be some kind of system to plug and play different
+# algorithms for register assignment, but for the time being this ought to work.
+
+# Take ir and restructure statements as array of arrays representing blocks.
+function getBlocks(ir)
+  blocked = []
+  for block in ir.cfg.blocks
+    push!(blocked, ir.stmts[block.stmts])
+  end
+  return blocked
+end
+
+function isPhi(stmt)
+  return isexpr(stmt, :(=)) && stmt.args[2] isa Compiler.PhiNode
+end
+
+function rmPhiNodes(ir)
+  blocked = getBlocks(ir)
+  for block in ir.cfg.blocks
+    for stmt in ir.stmts[block.stmts]
+      # Find the phinodes, restructure
+
+      if isPhi(stmt)
+        phi = stmt.args[2]
+        for i in eachindex(phi.edges)
+          s = blocked[phi.edges[i]]
+          inserted = false
+          for j in eachindex(s)
+            if isexpr(s[j], :(=)) && s[j].args[1] == phi.values[i]
+              insert!(s, j + 1, Expr(:(=), stmt.args[1], phi.values[i]))
+              inserted = true
+              break
+            end
+          end
+          if !inserted
+            pushfirst!(blocked[phi.edges[i]], Expr(:(=), stmt.args[1], phi.values[i]))
+          end
+        end
+      end
+    end
+  end
+  # return filter(stmt -> !(isPhi(stmt)), vcat(blocked...))
+  return map(line -> filter(isPhi |> !, line), blocked)
+end
+
+# Somewhat archaic, but adding labels allows reuse of old code for the time
+# being
+function addLabels(blocks)
+  stmts = []
+  for i in eachindex(blocks)
+    push!(stmts, Base.LabelNode(i), blocks[i]...)
+  end
+  return stmts
 end
 
 function rmssa(c)
@@ -104,6 +217,7 @@ int_binary_ops = [
   (:lshr_int, :shr_u),
   (:ashr_int, :shr_s),
   (:(===),   :eq),
+  (:eq_int,  :eq),
   (:slt_int, :lt_s),
   (:sle_int, :le_s),
   (:ult_int, :lt_u),
@@ -139,6 +253,19 @@ for (j, w) in vcat(int_binary_ops, float_binary_ops)
   end
 end
 
+for (j, w) in vcat(int_unary_ops, float_unary_ops)
+  wasmfuncs[GlobalRef(Core, j)] = function (T)
+    Op(WType(T), w)
+  end
+end
+
+for (j, w) in vcat(int_binary_ops, float_binary_ops)
+  wasmfuncs[GlobalRef(Core, j)] = function (A,B)
+    Op(WType(A), w)
+    # Op(WType(Int32), w)
+  end
+end
+
 wasmfuncs[GlobalRef(Base, :not_int)] = function (A)
   Op(WType(A), :eqz)
 end
@@ -164,7 +291,7 @@ end
 wasmcalls[GlobalRef(Base, :flipsign_int)] = function (i, x, y)
   T = exprtype(i, x)
   cond = Expr(:call, GlobalRef(Base, :slt_int), x, T(0))
-  sign = Expr(:call, GlobalRef(Base, :select_value), cond, T(-1), T(1))
+  sign = Expr(:call, GlobalRef(Base, :ifelse), cond, T(-1), T(1))
   sign.typ = T
   Expr(:call, nop,
     Expr(:call, GlobalRef(Base, :mul_int), sign, x))
@@ -177,7 +304,11 @@ end
 
 # More complex intrinsics
 
-wasmcalls[GlobalRef(Base, :select_value)] = function (i, c, a, b)
+wasmcalls[GlobalRef(Base, :ifelse)] = function (i, c, a, b)
+  return Expr(:call, Select(), a, b, c)
+end
+
+wasmcalls[GlobalRef(Main, :ifelse)] = function (i, c, a, b)
   return Expr(:call, Select(), a, b, c)
 end
 
@@ -188,6 +319,16 @@ wasmcalls[GlobalRef(Base, :bitcast)] = function (i, T, x)
   @assert sizeof(T) == sizeof(X)
   Expr(:call, Convert(WType(T), WType(X), :reinterpret), x)
 end
+
+# # Just try having it exactly the same who knows.
+# wasmcalls[GlobalRef(Core, :trunc_int)] = function (i, T, x)
+#   Expr(:call, nop, x)
+#   # T isa GlobalRef && (T = getfield(T.mod, T.name))
+#   # X = exprtype(i, x)
+#   # WType(T) == WType(X) && return Expr(:call, nop, x)
+#   # @assert sizeof(T) == sizeof(X)
+#   # Expr(:call, Convert(WType(T), WType(X), :reinterpret), x)
+# end
 
 wasmcalls[GlobalRef(Base, :fptosi)] = function (i, T, x)
   T isa GlobalRef && (T = getfield(T.mod, T.name))
@@ -210,8 +351,10 @@ isprimitive(x::GlobalRef) =
   deref(x) isa Core.IntrinsicFunction ||
   deref(x) isa Core.Builtin
 
-function lowercalls(m::ModuleState, c::CodeInfo, code)
+function lowercalls(m::ModuleState, c::IRCode, code)
+  num_args = length(c.argtypes)
   prewalk(code) do x
+    # @show x, typeof(x)
     if isexpr(x, :call) && deref(x.args[1]) == Base.throw
       unreachable
     elseif (isexpr(x, :call) && isprimitive(x.args[1]))
@@ -220,19 +363,27 @@ function lowercalls(m::ModuleState, c::CodeInfo, code)
       lower_invoke(m, x.args)
     elseif isexpr(x, :foreigncall)
       lower_ccall(m, x.args)
-    elseif isexpr(x, :(=)) && x.args[1] isa SlotNumber
-      Expr(:call, SetLocal(false, x.args[1].id-2), x.args[2])
-    elseif x isa SlotNumber
-      Local(x.id-2)
-    elseif isexpr(x, :gotoifnot)
-      Expr(:call, Goto(true, x.args[2]),
-           Expr(:call, GlobalRef(Base, :not_int), x.args[1]))
-    elseif x isa GotoNode
+    elseif isexpr(x, :(=)) && x.args[1] isa SSAValue
+      Expr(:call, SetLocal(false, x.args[1].id + num_args -1), x.args[2])
+    elseif x isa SSAValue
+      Local(x.id+num_args-1)
+    elseif x isa Argument
+      Local(x.n-2)
+    elseif x isa Compiler.GotoIfNot
+      # typ = x.cond isa Argument ? c.argtypes[x.cond.n] : x.cond isa SSAValue ? c.types[x.cond.id] : typeof(x.cond)
+      # Expr(:call, Goto(true, x.dest),
+      #      Expr(:call, GlobalRef(Base, :not_int), (x.cond, typ)))
+      Expr(:call, Goto(true, x.dest),
+           Expr(:call, GlobalRef(Base, :not_int), x.cond))
+    elseif x isa Core.GotoNode
+      # @show "this never happens"
       Goto(false, x.label)
-    elseif x isa LabelNode
+    elseif x isa Base.LabelNode
       Label(x.label)
-    elseif isexpr(x, :return)
-      Expr(:call, Return(), x.args[1])
+    elseif x isa Core.Compiler.ReturnNode
+      Expr(:call, Return(), x.val)
+    elseif x isa Nothing
+      Expr(:call, Nop())
     else
       x
     end
@@ -240,11 +391,12 @@ function lowercalls(m::ModuleState, c::CodeInfo, code)
 end
 
 function lower_invoke(m::ModuleState, args)
-  # This lowers the function invoked. `args` is the Any[] from the :invoke Expr. 
-  # If the function has not been compiled, compile it. 
+  # This lowers the function invoked. `args` is the Any[] from the :invoke Expr.
+  # If the function has not been compiled, compile it.
   # Generate the WASM call.
   tt = argtypes(args[1])
   name = createfunname(args[1], tt)
+  @show keys(m.funcs)
   if !haskey(m.funcs, name)
     mi = args[1]
     ci = Base.uncompressed_ast(mi.def, mi.inferred)
@@ -256,7 +408,7 @@ end
 
 function lower_ccall(m::ModuleState, args)
   (fnname, env) = args[1]
-  name = Symbol(env, :_, fnname) 
+  name = Symbol(env, :_, fnname)
   m.imports[name] = Import(env, fnname, :func, map(WType, args[3]), WType(args[2]))
   return Expr(:call, Call(name), args[4:2:end]...)
 end
@@ -264,10 +416,12 @@ end
 argtypes(x::Core.MethodInstance) = Tuple{x.specTypes.parameters[2:end]...}
 argtypes(x::Method) = Tuple{x.sig.parameters[2:end]...}
 
+createfunname(fun::Symbol, argtypes::UnionAll) = Symbol(fun, "_", join(argtypes, "_"))
 createfunname(fun::Symbol, argtypes) = Symbol(fun, "_", join(collect(argtypes.parameters), "_"))
-createfunname(fun::Function, argtypes) = createfunname(typeof(fun), argtypes)
-createfunname(funtyp::DataType, argtypes) = Symbol(funtyp, "_", join(collect(argtypes.parameters), "_"))
-createfunname(mi::Core.MethodInstance, argtypes) = createfunname(mi.def.sig.parameters[1], argtypes)
+createfunname(fun::Function, argtypes) = createfunname(funname(fun), argtypes)
+# createfunname(funtyp::DataType, argtypes) = Symbol(funtyp, "_", join(collect(argtypes.parameters), "_"))
+# createfunname(mi::Core.MethodInstance, argtypes) = createfunname(mi.def.sig.parameters[1], argtypes)
+createfunname(mi::Core.MethodInstance, argtypes) = createfunname(mi.def.name, argtypes)
 
 basename(f::Function) = Base.function_name(f)
 basename(f::Core.IntrinsicFunction) = Symbol(unsafe_string(ccall(:jl_intrinsic_name, Cstring, (Core.IntrinsicFunction,), f)))
@@ -277,7 +431,13 @@ basename(m::Method) = m.name == :Type ? m.sig.parameters[1].parameters[1].name.n
 
 iscontrol(ex) = isexpr(ex, :while) || isexpr(ex, :if)
 
-lower(m::ModuleState, c::CodeInfo) = lowercalls(m, c, rmssa(c))
+function dePhi(c)
+
+  addVars(c.stmts)
+  @show Expr(:block, addLabels(rmPhiNodes(c))...)
+end
+
+lower(m::ModuleState, c::IRCode) = lowercalls(m, c, dePhi(c))
 
 # Convert to WASM instructions
 
@@ -314,11 +474,18 @@ function code_wasm(m::ModuleState, ex, A)
 end
 
 function code_wasm(m::ModuleState, name::Symbol, A, cinfo::CodeInfo, R)
-  body = towasm_(m, lower(m, cinfo).args) |> Block |> WebAssembly.restructure |> WebAssembly.optimise
+  ircode = Core.Compiler.inflate_ir(cinfo)
+
+  # This is being calculated twice but once the register allocation is changed
+  # it won't work anymore anyway.
+  used = Base.IdSet{Int}()
+  foreach(stmt->Core.Compiler.scan_ssa_use!(push!, used, stmt), ircode.stmts)
+
+  body = towasm_(m, lower(m, ircode).args) |> Block |> WebAssembly.restructure |> WebAssembly.optimise
   Func(name,
        [WType(T) for T in A.parameters],
        [WType(R)],
-       [WType(P) for P in cinfo.slottypes[length(A.parameters)+2:end]],
+       [WType(i ∈ used ? ircode.types[i] : Int32) for i in eachindex(ircode.types)],
        body)
 end
 
@@ -330,10 +497,10 @@ end
 """
     wasm_module(funpairlist)
 
-Return a compiled WebAssembly ModuleState that includes every function defined by `funpairlist`. 
-  
-`funpairlist` is a vector of pairs. Each pair includes the function to include and 
-a tuple type of the arguments to that function. For example, here is the invocation to 
+Return a compiled WebAssembly ModuleState that includes every function defined by `funpairlist`.
+
+`funpairlist` is a vector of pairs. Each pair includes the function to include and
+a tuple type of the arguments to that function. For example, here is the invocation to
 return a wasm ModuleState with the `mathfun` and `anotherfun` included.
 
     m = wasm_module([mathfun => Tuple{Float64},
@@ -344,6 +511,7 @@ function wasm_module(funpairlist)
   for (fun, tt) in funpairlist
     internalname = createfunname(fun, tt)
     exportedname = funname(fun)
+    m.funcs[internalname] = WebAssembly.Func(:idontknowdoi,[],[],[],WebAssembly.Block([]))
     m.funcs[internalname] = code_wasm(m, fun, tt)
     m.exports[exportedname] = Export(exportedname, internalname, :func)
   end
