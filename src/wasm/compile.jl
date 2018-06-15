@@ -522,7 +522,7 @@ function wasm_module(funpairlist)
   for (fun, tt) in funpairlist
     internalname = createfunname(fun, tt)
     exportedname = funname(fun)
-    m.funcs[internalname] = WebAssembly.Func(:idontknowdoi,[],[],[],WebAssembly.Block([]))
+    m.funcs[internalname] = Func(:name, [], [], [], Block([]))
     m.funcs[internalname] = code_wasm(m, fun, tt)
     m.exports[exportedname] = Export(exportedname, internalname, :func)
   end
