@@ -201,6 +201,16 @@ wasmcalls[GlobalRef(Base, :sitofp)] = function (i, T, x)
   Expr(:call, Convert(WType(T), WType(X), :convert_s), x)
 end
 
+wasmcalls[GlobalRef(Base, :arraylen)] = function (i, xs)
+  # @show (as)
+  Expr(:call, Call(Symbol("~lib/array/Array<u32>#get:length")), xs)
+  # nop
+end
+
+wasmcalls[GlobalRef(Base, :arrayref)] = function (i, xs, idx)
+  Expr(:call, Call(Symbol("~lib/array/Array<u32>#__get")), xs, idx)
+end
+
 wasmcall(i, f, xs...) =
   haskey(wasmcalls, f) ? wasmcalls[f](i, xs...) :
   Expr(:call, wasmfunc(f, exprtype.(i, xs)...), xs...)
