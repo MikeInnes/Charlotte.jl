@@ -337,6 +337,15 @@ wasmcalls[GlobalRef(Base, :fptosi)] = function (i, T, x)
   Expr(:call, Convert(WType(T), WType(X), :trunc_s), x)
 end
 
+wasmcalls[GlobalRef(Base, :checked_trunc_sint)] = function (i, T, x)
+  T isa GlobalRef && (T = getfield(T.mod, T.name))
+  X = exprtype(i, x)
+  @show (T, X)
+  @show T == Int32 && X == Int64
+  (T == Int32 && X == Int64) && return Expr(:call, Convert(WType(T), WType(X), :wrap), x)
+  Expr(:call, Convert(WType(T), WType(X), :trunc_s), x)
+end
+
 wasmcalls[GlobalRef(Base, :sitofp)] = function (i, T, x)
   T isa GlobalRef && (T = getfield(T.mod, T.name))
   X = exprtype(i, x)
@@ -344,13 +353,31 @@ wasmcalls[GlobalRef(Base, :sitofp)] = function (i, T, x)
 end
 
 wasmcalls[GlobalRef(Base, :arraylen)] = function (i, xs)
-  # @show (as)
-  Expr(:call, Call(Symbol("~lib/array/Array<u32>#get:length")), xs)
-  # nop
+  Expr(:call, Call(Symbol("arraylen")), xs)
+end
+
+wasmcalls[GlobalRef(Base, :arraysize)] = function (i, xs, dim)
+  if dim == 1
+    return Expr(:call, Call(Symbol("arraylen")), xs)
+  else
+    error("Multi dim arrays not supported")
+  end
+  nop
 end
 
 wasmcalls[GlobalRef(Base, :arrayref)] = function (i, xs, idx)
-  Expr(:call, Call(Symbol("~lib/array/Array<u32>#__get")), xs, idx)
+  Expr(:call, Call(Symbol("arrayref_i64")), xs, idx)
+end
+
+wasmcalls[GlobalRef(Base, :arrayset)] = function (i, xs, val, idx)
+  Expr(:call, Call(Symbol("arrayset_i64")), xs, val, idx)
+end
+
+
+wasmcalls[GlobalRef(Base, :sext_int)] = function (i, T, x)
+  T isa GlobalRef && (T = getfield(T.mod, T.name))
+  X = exprtype(i, x)
+  Expr(:call, Convert(WType(T), WType(X), :extend_s), x)
 end
 
 wasmcall(i, f, xs...) =
@@ -435,6 +462,13 @@ createfunname(fun::Symbol, argtypes) = Symbol(fun, "_", join(collect(argtypes.pa
 createfunname(fun::Function, argtypes) = createfunname(funname(fun), argtypes)
 # createfunname(funtyp::DataType, argtypes) = Symbol(funtyp, "_", join(collect(argtypes.parameters), "_"))
 # createfunname(mi::Core.MethodInstance, argtypes) = createfunname(mi.def.sig.parameters[1], argtypes)
+
+# fixName(s) = replace(replace(s, r"{|}|(|)|[|]" => ""), "," => ":")
+#
+# createfunname(fun::Symbol, argtypes) = Symbol(fun, "_", fixName(join(collect(argtypes.parameters), "_")))
+# createfunname(fun::Function, argtypes) = createfunname(typeof(fun), argtypes)
+# createfunname(funtyp::DataType, argtypes) = Symbol(funtyp, "_", fixName(join(collect(argtypes.parameters), "_")))
+
 createfunname(mi::Core.MethodInstance, argtypes) = createfunname(mi.def.name, argtypes)
 
 basename(f::Function) = Base.function_name(f)
@@ -471,7 +505,7 @@ function towasm(m::ModuleState, x, is = Instruction[])
     push!(is, Block([Loop(towasm_(m, x.args[2].args))]))
   elseif deref(x) isa Number
     push!(is, Const(deref(x)))
-  elseif x isa LineNumberNode || isexpr(x, :inbounds) || isexpr(x, :meta)
+  elseif x isa LineNumberNode || isexpr(x, :inbounds) || isexpr(x, :meta) || x isa Void
   else
     error("Can't convert to wasm: $x")
   end
