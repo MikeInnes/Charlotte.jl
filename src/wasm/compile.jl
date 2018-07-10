@@ -530,5 +530,5 @@ function wasm_module(funpairlist)
     m.exports[:memory] = Export(:memory, :memory, :memory)
   end
   return Module(FuncType[], collect(values(m.funcs)), Table[], [Mem(:m, 1, nothing)], Global[], Elem[],
-                collect(values(m.data)), Ref(0), collect(values(m.imports)), collect(values(m.exports)))
+                collect(values(m.data)), nothing, collect(values(m.imports)), collect(values(m.exports)))
 end
