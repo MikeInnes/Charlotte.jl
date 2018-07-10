@@ -211,12 +211,12 @@ wasmcalls[GlobalRef(Base, :sitofp)] = function (i, T, x)
 end
 
 wasmcalls[GlobalRef(Base, :arraylen)] = function (i, xs)
-  Expr(:call, Call(Symbol("arraylen")), xs)
+  Expr(:call, Call(Symbol("arraylen_", WType(eltype(exprtype(i, xs))))), xs)
 end
 
 wasmcalls[GlobalRef(Base, :arraysize)] = function (i, xs, dim)
   if dim == 1
-    return Expr(:call, Call(Symbol("arraylen")), xs)
+    return Expr(:call, Call(Symbol("arraylen_", WType(eltype(exprtype(i, xs))))), xs)
   else
     error("Multi dim arrays not supported")
   end
@@ -224,11 +224,11 @@ wasmcalls[GlobalRef(Base, :arraysize)] = function (i, xs, dim)
 end
 
 wasmcalls[GlobalRef(Base, :arrayref)] = function (i, xs, idx)
-  Expr(:call, Call(Symbol("arrayref_i64")), xs, idx)
+  Expr(:call, Call(Symbol("arrayref_", WType(eltype(exprtype(i, xs))))), xs, idx)
 end
 
 wasmcalls[GlobalRef(Base, :arrayset)] = function (i, xs, val, idx)
-  Expr(:call, Call(Symbol("arrayset_i64")), xs, val, idx)
+  Expr(:call, Call(Symbol("arrayset_", WType(eltype(exprtype(i, xs))))), xs, val, idx)
 end
 
 
@@ -236,6 +236,12 @@ wasmcalls[GlobalRef(Base, :sext_int)] = function (i, T, x)
   T isa GlobalRef && (T = getfield(T.mod, T.name))
   X = exprtype(i, x)
   Expr(:call, Convert(WType(T), WType(X), :extend_s), x)
+end
+
+wasmcalls[GlobalRef(Base, :zext_int)] = function (i, T, x)
+  T isa GlobalRef && (T = getfield(T.mod, T.name))
+  X = exprtype(i, x)
+  Expr(:call, Convert(WType(T), WType(X), :extend_u), x)
 end
 
 wasmcall(i, f, xs...) =
