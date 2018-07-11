@@ -353,7 +353,8 @@ wasmcalls[GlobalRef(Base, :sitofp)] = function (i, T, x)
 end
 
 wasmcalls[GlobalRef(Base, :arraylen)] = function (i, xs)
-  Expr(:call, Call(Symbol("main/arraylen_", WType(eltype(exprtype(i, xs))))), xs)
+  a = Expr(:call, Call(Symbol("main/arraylen_", WType(eltype(exprtype(i, xs))))), xs)
+  Expr(:call, Convert(WType(Int64), WType(Int32), :extend_u), a)
 end
 
 wasmcalls[GlobalRef(Base, :arraysize)] = function (i, xs, dim)
@@ -367,11 +368,17 @@ end
 
 wasmcalls[GlobalRef(Base, :arrayref)] = function (i, xs, idx)
   a = Expr(:call, GlobalRef(Base, :sub_int), idx, 1)
-  Expr(:call, Call(Symbol("main/arrayref_", WType(eltype(exprtype(i, xs))))), xs, a)
+  if exprtype(i, idx) == Int64 # Will need to change this for wasm64
+    a = Expr(:call, Convert(WType(Int32), WType(Int64), :wrap), a)
+  end
+  a = Expr(:call, Call(Symbol("main/arrayref_", WType(eltype(exprtype(i, xs))))), xs, a)
 end
 
 wasmcalls[GlobalRef(Base, :arrayset)] = function (i, xs, val, idx)
   a = Expr(:call, GlobalRef(Base, :sub_int), idx, 1)
+  if exprtype(i, idx) == Int64
+    a = Expr(:call, Convert(WType(Int32), WType(Int64), :wrap), a)
+  end
   Expr(:call, Call(Symbol("main/arrayset_", WType(eltype(exprtype(i, xs))))), xs, val, a)
 end
 
