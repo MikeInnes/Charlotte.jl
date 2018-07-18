@@ -240,8 +240,8 @@ function lowercalls(m::ModuleState, c::CodeInfo, code)
 end
 
 function lower_invoke(m::ModuleState, args)
-  # This lowers the function invoked. `args` is the Any[] from the :invoke Expr. 
-  # If the function has not been compiled, compile it. 
+  # This lowers the function invoked. `args` is the Any[] from the :invoke Expr.
+  # If the function has not been compiled, compile it.
   # Generate the WASM call.
   tt = argtypes(args[1])
   name = createfunname(args[1], tt)
@@ -256,7 +256,7 @@ end
 
 function lower_ccall(m::ModuleState, args)
   (fnname, env) = args[1]
-  name = Symbol(env, :_, fnname) 
+  name = Symbol(env, :_, fnname)
   m.imports[name] = Import(env, fnname, :func, map(WType, args[3]), WType(args[2]))
   return Expr(:call, Call(name), args[4:2:end]...)
 end
@@ -308,18 +308,21 @@ end
 funname(f::Function) = Base.function_name(f)
 funname(s::Symbol) = s
 
-function code_wasm(m::ModuleState, ex, A)
+function code_wasm(m::ModuleState, ex, A; ks...)
   cinfo, R = code_typed(ex, A)[1]
-  code_wasm(m, createfunname(ex, A), A, cinfo, R)
+  code_wasm(m, createfunname(ex, A), A, cinfo, R; ks...)
 end
 
-function code_wasm(m::ModuleState, name::Symbol, A, cinfo::CodeInfo, R)
-  body = towasm_(m, lower(m, cinfo).args) |> Block |> WebAssembly.restructure |> WebAssembly.optimise
-  Func(name,
-       [WType(T) for T in A.parameters],
-       [WType(R)],
-       [WType(P) for P in cinfo.slottypes[length(A.parameters)+2:end]],
-       body)
+function code_wasm(m::ModuleState, name::Symbol, A, cinfo::CodeInfo, R; optimise=true)
+  body = towasm_(m, lower(m, cinfo).args) |> Block |> WebAssembly.restructure
+  optimise && (body = WebAssembly.optimise(body))
+  f = Func(name,
+          [WType(T) for T in A.parameters],
+          [WType(R)],
+          [WType(P) for P in cinfo.slottypes[length(A.parameters)+2:end]],
+          body)
+  # println("now")
+  return optimise ? WebAssembly.allocate_registers(f) : f
 end
 
 macro code_wasm(ex)
@@ -330,10 +333,10 @@ end
 """
     wasm_module(funpairlist)
 
-Return a compiled WebAssembly ModuleState that includes every function defined by `funpairlist`. 
-  
-`funpairlist` is a vector of pairs. Each pair includes the function to include and 
-a tuple type of the arguments to that function. For example, here is the invocation to 
+Return a compiled WebAssembly ModuleState that includes every function defined by `funpairlist`.
+
+`funpairlist` is a vector of pairs. Each pair includes the function to include and
+a tuple type of the arguments to that function. For example, here is the invocation to
 return a wasm ModuleState with the `mathfun` and `anotherfun` included.
 
     m = wasm_module([mathfun => Tuple{Float64},
@@ -345,12 +348,14 @@ function wasm_module(funpairlist)
     internalname = createfunname(fun, tt)
     exportedname = funname(fun)
     m.funcs[internalname] = Func(:name, [], [], [], Block([]))
-    m.funcs[internalname] = code_wasm(m, fun, tt)
+    m.funcs[internalname] = code_wasm(m, fun, tt; optimise=false)
     m.exports[exportedname] = Export(exportedname, internalname, :func)
   end
   if length(m.data) > 0
     m.exports[:memory] = Export(:memory, :memory, :memory)
   end
-  return Module(FuncType[], collect(values(m.funcs)), Table[], [Mem(:m, 1, nothing)], Global[], Elem[],
+  fs = m.funcs
+  m = Module(FuncType[], collect(values(m.funcs)), Table[], [Mem(:m, 1, nothing)], Global[], Elem[],
                 collect(values(m.data)), Ref(0), collect(values(m.imports)), collect(values(m.exports)))
+  return WebAssembly.optimise(m, fs)
 end
