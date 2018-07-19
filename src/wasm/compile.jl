@@ -380,6 +380,17 @@ function wasm_module(filename::String, export_args=Dict{Symbol, Vector{Union{Voi
   return eval(m_, wasm_module(funpairlist))
 end
 
+macro wasm(ex)
+  fs = Vector()
+  postwalk(ex) do x
+    if isexpr(x, :call)
+      push!(fs, :($(esc(x.args[1])) => Tuple{$(esc.(x.args[2:end])...)}))
+    end
+    x
+  end
+  return :(wasm_module([$(fs...)]))
+end
+
 function map_maybe(f, xs::V) where V
   ys = V()
   for i in eachindex(xs)

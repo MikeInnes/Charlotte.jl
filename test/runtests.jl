@@ -57,6 +57,16 @@ m2 = wasm_module([docos2 => Tuple{Float64}])
 
 # end
 
+m = include("test-module.jl")
+
+m2 = @wasm begin
+  m.addTwo(Int, Int)
+  m.pow(Int, Int)
+  m.callFib(Int)
+end
+
+m2 = @wasm m.addTwo(Int,Int), m.pow(Int, Int)
+
 WA = WebAssembly
 
 relu(x) = ifelse(x < 0, 0, x)
