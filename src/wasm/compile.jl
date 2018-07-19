@@ -356,9 +356,9 @@ function wasm_module(funpairlist)
                 collect(values(m.data)), Ref(0), collect(values(m.imports)), collect(values(m.exports)))
 end
 
-macro wasm(ex)
+macro wasm(ex...)
   fs = Vector()
-  postwalk(ex) do x
+  postwalk(Expr(:block, ex...)) do x
     if isexpr(x, :call)
       push!(fs, :($(esc(x.args[1])) => Tuple{$(esc.(x.args[2:end])...)}))
     end
