@@ -6,10 +6,10 @@ using WebAssembly: WType, Func, Module, FuncType, Func, Table, Mem, Global, Elem
 struct ModuleState
   imports::Dict{Symbol, Import}
   exports::Dict{Symbol, Export}
-  funcs::Dict{Symbol, Func}
+  funcs::Dict{Symbol, Union{Void, Func}}
   data::Dict{Symbol, Data}
 end
-ModuleState() = ModuleState(Dict{Symbol, Import}(), Dict{Symbol, Export}(), Dict{Symbol, Func}(), Dict{Symbol, Data}())
+ModuleState() = ModuleState(Dict{Symbol, Import}(), Dict{Symbol, Export}(), Dict{Symbol, Union{Void, Func}}(), Dict{Symbol, Data}())
 
 walk(x, inner, outer) = outer(x)
 
@@ -240,8 +240,8 @@ function lowercalls(m::ModuleState, c::CodeInfo, code)
 end
 
 function lower_invoke(m::ModuleState, args)
-  # This lowers the function invoked. `args` is the Any[] from the :invoke Expr. 
-  # If the function has not been compiled, compile it. 
+  # This lowers the function invoked. `args` is the Any[] from the :invoke Expr.
+  # If the function has not been compiled, compile it.
   # Generate the WASM call.
   tt = argtypes(args[1])
   name = createfunname(args[1], tt)
@@ -249,6 +249,7 @@ function lower_invoke(m::ModuleState, args)
     mi = args[1]
     ci = Base.uncompressed_ast(mi.def, mi.inferred)
     R = mi.rettype
+    m.funcs[name] = nothing
     m.funcs[name] = code_wasm(m::ModuleState, name, tt, ci, R)
   end
   return Expr(:call, Call(name), args[3:end]...)
@@ -256,7 +257,7 @@ end
 
 function lower_ccall(m::ModuleState, args)
   (fnname, env) = args[1]
-  name = Symbol(env, :_, fnname) 
+  name = Symbol(env, :_, fnname)
   m.imports[name] = Import(env, fnname, :func, map(WType, args[3]), WType(args[2]))
   return Expr(:call, Call(name), args[4:2:end]...)
 end
@@ -330,10 +331,10 @@ end
 """
     wasm_module(funpairlist)
 
-Return a compiled WebAssembly ModuleState that includes every function defined by `funpairlist`. 
-  
-`funpairlist` is a vector of pairs. Each pair includes the function to include and 
-a tuple type of the arguments to that function. For example, here is the invocation to 
+Return a compiled WebAssembly ModuleState that includes every function defined by `funpairlist`.
+
+`funpairlist` is a vector of pairs. Each pair includes the function to include and
+a tuple type of the arguments to that function. For example, here is the invocation to
 return a wasm ModuleState with the `mathfun` and `anotherfun` included.
 
     m = wasm_module([mathfun => Tuple{Float64},
@@ -344,7 +345,7 @@ function wasm_module(funpairlist)
   for (fun, tt) in funpairlist
     internalname = createfunname(fun, tt)
     exportedname = funname(fun)
-    m.funcs[internalname] = Func(:name, [], [], [], Block([]))
+    m.funcs[internalname] = nothing
     m.funcs[internalname] = code_wasm(m, fun, tt)
     m.exports[exportedname] = Export(exportedname, internalname, :func)
   end
@@ -353,4 +354,38 @@ function wasm_module(funpairlist)
   end
   return Module(FuncType[], collect(values(m.funcs)), Table[], [Mem(:m, 1, nothing)], Global[], Elem[],
                 collect(values(m.data)), Ref(0), collect(values(m.imports)), collect(values(m.exports)))
+end
+
+function wasm_module(filename::String, export_args=Dict{Symbol, Vector{Union{Void, DataType}}}())
+  # If an (exported) function is not in export args it must have a type
+  # signature. Non exported functions can also be exported by including them in
+  # export_args, if they point to nothing they must also have a signature.
+  # Probably more useful for testing or writing modules specifically for web
+  # assembly.
+
+  # Might be an idea to allow exporting inferred functions, might be a bit
+  # tricky to figure out which wasm function is the correct one.
+  m = parse(read(filename, String))
+  isexpr(m, :module) || error()
+  m_ = eval(Main, m)
+  exports = filter!(e->eval(m_, e) isa Function, names(m_))
+  fs = map_maybe(x -> isexpr(x, :function) ? x.args[1].args : nothing, macroexpand(m.args[3]).args)
+  funpairlist = map_maybe(fs) do args
+    name = shift!(args)
+    name in exports || name in export_args || return nothing
+    f() = map(a -> isexpr(a, :(::)) ? eval(m_, a.args[2]) : error(String(name), " needs signature."), args)
+    types = get(f, export_args, name) |> ts -> ts == nothing ? f() : ts
+    return eval(m_, :(($name => Tuple{$(types)...})))
+  end
+  return eval(m_, wasm_module(funpairlist))
+end
+
+function map_maybe(f, xs::V) where V
+  ys = V()
+  for i in eachindex(xs)
+    if (y = f(xs[i])) != nothing
+      push!(ys, y)
+    end
+  end
+  return ys
 end
