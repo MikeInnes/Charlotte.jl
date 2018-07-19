@@ -308,6 +308,7 @@ end
 
 funname(f::Function) = Base.function_name(f)
 funname(s::Symbol) = s
+funname(f, args) = Symbol(funname(f), "_", join(map(WType, args.parameters), "_"))
 
 function code_wasm(m::ModuleState, ex, A)
   cinfo, R = code_typed(ex, A)[1]
@@ -347,7 +348,12 @@ function wasm_module(funpairlist)
     exportedname = funname(fun)
     m.funcs[internalname] = nothing
     m.funcs[internalname] = code_wasm(m, fun, tt)
-    m.exports[exportedname] = Export(exportedname, internalname, :func)
+    name_used = true
+    get!(m.exports, exportedname) do
+      name_used = false
+      Export(exportedname, internalname, :func)
+    end
+    name_used && (funname(fun, tt) |> n -> m.exports[n] = Export(n, internalname, :func))
   end
   if length(m.data) > 0
     m.exports[:memory] = Export(:memory, :memory, :memory)
