@@ -195,10 +195,62 @@ wasmcalls[GlobalRef(Base, :fptosi)] = function (i, T, x)
   Expr(:call, Convert(WType(T), WType(X), :trunc_s), x)
 end
 
+wasmcalls[GlobalRef(Base, :checked_trunc_sint)] = function (i, T, x)
+  T isa GlobalRef && (T = getfield(T.mod, T.name))
+  X = exprtype(i, x)
+  @show (T, X)
+  @show T == Int32 && X == Int64
+  (T == Int32 && X == Int64) && return Expr(:call, Convert(WType(T), WType(X), :wrap), x)
+  Expr(:call, Convert(WType(T), WType(X), :trunc_s), x)
+end
+
 wasmcalls[GlobalRef(Base, :sitofp)] = function (i, T, x)
   T isa GlobalRef && (T = getfield(T.mod, T.name))
   X = exprtype(i, x)
   Expr(:call, Convert(WType(T), WType(X), :convert_s), x)
+end
+
+wasmcalls[GlobalRef(Base, :arraylen)] = function (i, xs)
+  a = Expr(:call, Call(Symbol("main/arraylen_", WType(eltype(exprtype(i, xs))))), xs)
+  Expr(:call, Convert(WType(Int64), WType(Int32), :extend_u), a)
+end
+
+wasmcalls[GlobalRef(Base, :arraysize)] = function (i, xs, dim)
+  if dim == 1
+    return Expr(:call, Call(Symbol("main/arraylen_", WType(eltype(exprtype(i, xs))))), xs)
+  else
+    error("Multi dim arrays not supported")
+  end
+  nop
+end
+
+wasmcalls[GlobalRef(Base, :arrayref)] = function (i, xs, idx)
+  a = Expr(:call, GlobalRef(Base, :sub_int), idx, 1)
+  if exprtype(i, idx) == Int64 # Will need to change this for wasm64
+    a = Expr(:call, Convert(WType(Int32), WType(Int64), :wrap), a)
+  end
+  a = Expr(:call, Call(Symbol("main/arrayref_", WType(eltype(exprtype(i, xs))))), xs, a)
+end
+
+wasmcalls[GlobalRef(Base, :arrayset)] = function (i, xs, val, idx)
+  a = Expr(:call, GlobalRef(Base, :sub_int), idx, 1)
+  if exprtype(i, idx) == Int64
+    a = Expr(:call, Convert(WType(Int32), WType(Int64), :wrap), a)
+  end
+  Expr(:call, Call(Symbol("main/arrayset_", WType(eltype(exprtype(i, xs))))), xs, val, a)
+end
+
+
+wasmcalls[GlobalRef(Base, :sext_int)] = function (i, T, x)
+  T isa GlobalRef && (T = getfield(T.mod, T.name))
+  X = exprtype(i, x)
+  Expr(:call, Convert(WType(T), WType(X), :extend_s), x)
+end
+
+wasmcalls[GlobalRef(Base, :zext_int)] = function (i, T, x)
+  T isa GlobalRef && (T = getfield(T.mod, T.name))
+  X = exprtype(i, x)
+  Expr(:call, Convert(WType(T), WType(X), :extend_u), x)
 end
 
 wasmcall(i, f, xs...) =
@@ -240,8 +292,8 @@ function lowercalls(m::ModuleState, c::CodeInfo, code)
 end
 
 function lower_invoke(m::ModuleState, args)
-  # This lowers the function invoked. `args` is the Any[] from the :invoke Expr. 
-  # If the function has not been compiled, compile it. 
+  # This lowers the function invoked. `args` is the Any[] from the :invoke Expr.
+  # If the function has not been compiled, compile it.
   # Generate the WASM call.
   tt = argtypes(args[1])
   name = createfunname(args[1], tt)
@@ -256,7 +308,7 @@ end
 
 function lower_ccall(m::ModuleState, args)
   (fnname, env) = args[1]
-  name = Symbol(env, :_, fnname) 
+  name = Symbol(env, :_, fnname)
   m.imports[name] = Import(env, fnname, :func, map(WType, args[3]), WType(args[2]))
   return Expr(:call, Call(name), args[4:2:end]...)
 end
@@ -264,10 +316,12 @@ end
 argtypes(x::Core.MethodInstance) = Tuple{x.specTypes.parameters[2:end]...}
 argtypes(x::Method) = Tuple{x.sig.parameters[2:end]...}
 
-createfunname(fun::Symbol, argtypes) = Symbol(fun, "_", join(collect(argtypes.parameters), "_"))
+fixName(s) = replace(replace(s, r"{|}|(|)|[|]" => ""), "," => ":")
+
+createfunname(fun::Symbol, argtypes) = Symbol(fun, "_", fixName(join(collect(argtypes.parameters), "_")))
 createfunname(fun::Function, argtypes) = createfunname(typeof(fun), argtypes)
-createfunname(funtyp::DataType, argtypes) = Symbol(funtyp, "_", join(collect(argtypes.parameters), "_"))
-createfunname(mi::Core.MethodInstance, argtypes) = createfunname(mi.def.sig.parameters[1], argtypes)
+createfunname(funtyp::DataType, argtypes) = Symbol(funtyp, "_", fixName(join(collect(argtypes.parameters), "_")))
+createfunname(mi::Core.MethodInstance, argtypes) = createfunname(mi.def.name, argtypes)
 
 basename(f::Function) = Base.function_name(f)
 basename(f::Core.IntrinsicFunction) = Symbol(unsafe_string(ccall(:jl_intrinsic_name, Cstring, (Core.IntrinsicFunction,), f)))
@@ -298,7 +352,7 @@ function towasm(m::ModuleState, x, is = Instruction[])
     push!(is, Block([Loop(towasm_(m, x.args[2].args))]))
   elseif deref(x) isa Number
     push!(is, Const(deref(x)))
-  elseif x isa LineNumberNode || isexpr(x, :inbounds) || isexpr(x, :meta)
+  elseif x isa LineNumberNode || isexpr(x, :inbounds) || isexpr(x, :meta) || x isa Void
   else
     error("Can't convert to wasm: $x")
   end
@@ -315,6 +369,9 @@ end
 
 function code_wasm(m::ModuleState, name::Symbol, A, cinfo::CodeInfo, R)
   body = towasm_(m, lower(m, cinfo).args) |> Block |> WebAssembly.restructure |> WebAssembly.optimise
+  # @show A.parameters
+  # @show R
+  # @show cinfo.slottypes[length(A.parameters)+2:end]
   Func(name,
        [WType(T) for T in A.parameters],
        [WType(R)],
@@ -330,10 +387,10 @@ end
 """
     wasm_module(funpairlist)
 
-Return a compiled WebAssembly ModuleState that includes every function defined by `funpairlist`. 
-  
-`funpairlist` is a vector of pairs. Each pair includes the function to include and 
-a tuple type of the arguments to that function. For example, here is the invocation to 
+Return a compiled WebAssembly ModuleState that includes every function defined by `funpairlist`.
+
+`funpairlist` is a vector of pairs. Each pair includes the function to include and
+a tuple type of the arguments to that function. For example, here is the invocation to
 return a wasm ModuleState with the `mathfun` and `anotherfun` included.
 
     m = wasm_module([mathfun => Tuple{Float64},
@@ -352,5 +409,5 @@ function wasm_module(funpairlist)
     m.exports[:memory] = Export(:memory, :memory, :memory)
   end
   return Module(FuncType[], collect(values(m.funcs)), Table[], [Mem(:m, 1, nothing)], Global[], Elem[],
-                collect(values(m.data)), Ref(0), collect(values(m.imports)), collect(values(m.exports)))
+                collect(values(m.data)), nothing, collect(values(m.imports)), collect(values(m.exports)))
 end
