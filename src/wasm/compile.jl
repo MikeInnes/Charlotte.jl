@@ -240,8 +240,8 @@ function lowercalls(m::ModuleState, c::CodeInfo, code)
 end
 
 function lower_invoke(m::ModuleState, args)
-  # This lowers the function invoked. `args` is the Any[] from the :invoke Expr. 
-  # If the function has not been compiled, compile it. 
+  # This lowers the function invoked. `args` is the Any[] from the :invoke Expr.
+  # If the function has not been compiled, compile it.
   # Generate the WASM call.
   tt = argtypes(args[1])
   name = createfunname(args[1], tt)
@@ -256,7 +256,7 @@ end
 
 function lower_ccall(m::ModuleState, args)
   (fnname, env) = args[1]
-  name = Symbol(env, :_, fnname) 
+  name = Symbol(env, :_, fnname)
   m.imports[name] = Import(env, fnname, :func, map(WType, args[3]), WType(args[2]))
   return Expr(:call, Call(name), args[4:2:end]...)
 end
@@ -330,10 +330,10 @@ end
 """
     wasm_module(funpairlist)
 
-Return a compiled WebAssembly ModuleState that includes every function defined by `funpairlist`. 
-  
-`funpairlist` is a vector of pairs. Each pair includes the function to include and 
-a tuple type of the arguments to that function. For example, here is the invocation to 
+Return a compiled WebAssembly ModuleState that includes every function defined by `funpairlist`.
+
+`funpairlist` is a vector of pairs. Each pair includes the function to include and
+a tuple type of the arguments to that function. For example, here is the invocation to
 return a wasm ModuleState with the `mathfun` and `anotherfun` included.
 
     m = wasm_module([mathfun => Tuple{Float64},
@@ -353,4 +353,15 @@ function wasm_module(funpairlist)
   end
   return Module(FuncType[], collect(values(m.funcs)), Table[], [Mem(:m, 1, nothing)], Global[], Elem[],
                 collect(values(m.data)), Ref(0), collect(values(m.imports)), collect(values(m.exports)))
+end
+
+macro wasm(ex)
+  fs = Vector()
+  postwalk(ex) do x
+    if isexpr(x, :call)
+      push!(fs, :($(esc(x.args[1])) => Tuple{$(esc.(x.args[2:end])...)}))
+    end
+    x
+  end
+  return :(wasm_module([$(fs...)]))
 end
