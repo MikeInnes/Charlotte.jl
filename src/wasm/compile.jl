@@ -6,10 +6,10 @@ using WebAssembly: WType, Func, Module, FuncType, Func, Table, Mem, Global, Elem
 struct ModuleState
   imports::Dict{Symbol, Import}
   exports::Dict{Symbol, Export}
-  funcs::Dict{Symbol, Func}
+  funcs::Dict{Symbol, Union{Void, Func}}
   data::Dict{Symbol, Data}
 end
-ModuleState() = ModuleState(Dict{Symbol, Import}(), Dict{Symbol, Export}(), Dict{Symbol, Func}(), Dict{Symbol, Data}())
+ModuleState() = ModuleState(Dict{Symbol, Import}(), Dict{Symbol, Export}(), Dict{Symbol, Union{Void, Func}}(), Dict{Symbol, Data}())
 
 walk(x, inner, outer) = outer(x)
 
@@ -249,6 +249,7 @@ function lower_invoke(m::ModuleState, args)
     mi = args[1]
     ci = Base.uncompressed_ast(mi.def, mi.inferred)
     R = mi.rettype
+    m.funcs[name] = nothing
     m.funcs[name] = code_wasm(m::ModuleState, name, tt, ci, R)
   end
   return Expr(:call, Call(name), args[3:end]...)
@@ -344,7 +345,7 @@ function wasm_module(funpairlist)
   for (fun, tt) in funpairlist
     internalname = createfunname(fun, tt)
     exportedname = funname(fun)
-    m.funcs[internalname] = Func(:name, [], [], [], Block([]))
+    m.funcs[internalname] = nothing
     m.funcs[internalname] = code_wasm(m, fun, tt)
     m.exports[exportedname] = Export(exportedname, internalname, :func)
   end
