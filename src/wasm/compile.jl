@@ -321,7 +321,8 @@ function code_wasm(m::ModuleState, name::Symbol, A, cinfo::CodeInfo, R)
        [WType(T) for T in A.parameters],
        [WType(R)],
        [WType(P) for P in cinfo.slottypes[length(A.parameters)+2:end]],
-       body)
+       body,
+       ([T for T in A.parameters], [R]))
 end
 
 macro code_wasm(ex)
@@ -343,9 +344,9 @@ return a wasm ModuleState with the `mathfun` and `anotherfun` included.
 """
 function wasm_module(funpairlist)
   m = ModuleState()
-  for (fun, tt) in funpairlist
+  for (fun, tt, usebasename) in funpairlist
     internalname = createfunname(fun, tt)
-    exportedname = funname(fun)
+    exportedname = usebasename ? funname(fun) : funname(fun, tt)
     m.funcs[internalname] = nothing
     m.funcs[internalname] = code_wasm(m, fun, tt)
     name_used = true
@@ -362,11 +363,34 @@ function wasm_module(funpairlist)
                 collect(values(m.data)), Ref(0), collect(values(m.imports)), collect(values(m.exports)))
 end
 
+# getSymbols =
+
+function unwrapArgs(args)
+  gs = Vector([[]])
+  for arg in args
+    if isexpr(arg, :tuple)
+      gs = vcat([map!(g -> push!(g, a), deepcopy(gs)) for a in arg.args]...)
+    else
+      map!(g -> push!(g, arg), gs)
+    end
+  end
+  return gs
+end
+
 macro wasm(ex...)
   fs = Vector()
   postwalk(Expr(:block, ex...)) do x
     if isexpr(x, :call)
-      push!(fs, :($(esc(x.args[1])) => Tuple{$(esc.(x.args[2:end])...)}))
+      args = x.args[2:end]
+      gs = Vector()
+      if !isempty(args) && isexpr(args[1], :vect)
+        all(e->length(e.args)==length(args[1].args), args) || error("[] used for sum.")
+        push!(gs, vcat(vcat([map(a -> a.args[i], args) |> unwrapArgs for i in 1:length(args[1].args)]...))...)
+      else
+        gs = unwrapArgs(args)
+      end
+      usebasename = length(gs) == 1
+      push!(fs, map(g -> :($(esc(x.args[1])), Tuple{$(esc.(g)...)}, $usebasename), gs)...)
     end
     x
   end
