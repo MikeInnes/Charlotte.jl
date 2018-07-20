@@ -1,6 +1,6 @@
 module Charlotte
 
-export @code_wasm, @wasm_import, wasm_module
+export @code_wasm, @wasm_import, wasm_module, @wasm
 
 include("wasm/compile.jl")
 

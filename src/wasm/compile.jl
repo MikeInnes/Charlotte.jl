@@ -6,10 +6,10 @@ using WebAssembly: WType, Func, Module, FuncType, Func, Table, Mem, Global, Elem
 struct ModuleState
   imports::Dict{Symbol, Import}
   exports::Dict{Symbol, Export}
-  funcs::Dict{Symbol, Func}
+  funcs::Dict{Symbol, Union{Void, Func}}
   data::Dict{Symbol, Data}
 end
-ModuleState() = ModuleState(Dict{Symbol, Import}(), Dict{Symbol, Export}(), Dict{Symbol, Func}(), Dict{Symbol, Data}())
+ModuleState() = ModuleState(Dict{Symbol, Import}(), Dict{Symbol, Export}(), Dict{Symbol, Union{Void, Func}}(), Dict{Symbol, Data}())
 
 walk(x, inner, outer) = outer(x)
 
@@ -240,8 +240,8 @@ function lowercalls(m::ModuleState, c::CodeInfo, code)
 end
 
 function lower_invoke(m::ModuleState, args)
-  # This lowers the function invoked. `args` is the Any[] from the :invoke Expr. 
-  # If the function has not been compiled, compile it. 
+  # This lowers the function invoked. `args` is the Any[] from the :invoke Expr.
+  # If the function has not been compiled, compile it.
   # Generate the WASM call.
   tt = argtypes(args[1])
   name = createfunname(args[1], tt)
@@ -249,6 +249,7 @@ function lower_invoke(m::ModuleState, args)
     mi = args[1]
     ci = Base.uncompressed_ast(mi.def, mi.inferred)
     R = mi.rettype
+    m.funcs[name] = nothing
     m.funcs[name] = code_wasm(m::ModuleState, name, tt, ci, R)
   end
   return Expr(:call, Call(name), args[3:end]...)
@@ -256,7 +257,7 @@ end
 
 function lower_ccall(m::ModuleState, args)
   (fnname, env) = args[1]
-  name = Symbol(env, :_, fnname) 
+  name = Symbol(env, :_, fnname)
   m.imports[name] = Import(env, fnname, :func, map(WType, args[3]), WType(args[2]))
   return Expr(:call, Call(name), args[4:2:end]...)
 end
@@ -307,6 +308,7 @@ end
 
 funname(f::Function) = Base.function_name(f)
 funname(s::Symbol) = s
+funname(f, args) = Symbol(funname(f), "_", join(map(WType, args.parameters), "_"))
 
 function code_wasm(m::ModuleState, ex, A)
   cinfo, R = code_typed(ex, A)[1]
@@ -319,7 +321,8 @@ function code_wasm(m::ModuleState, name::Symbol, A, cinfo::CodeInfo, R)
        [WType(T) for T in A.parameters],
        [WType(R)],
        [WType(P) for P in cinfo.slottypes[length(A.parameters)+2:end]],
-       body)
+       body,
+       ([T for T in A.parameters], [R]))
 end
 
 macro code_wasm(ex)
@@ -330,10 +333,10 @@ end
 """
     wasm_module(funpairlist)
 
-Return a compiled WebAssembly ModuleState that includes every function defined by `funpairlist`. 
-  
-`funpairlist` is a vector of pairs. Each pair includes the function to include and 
-a tuple type of the arguments to that function. For example, here is the invocation to 
+Return a compiled WebAssembly ModuleState that includes every function defined by `funpairlist`.
+
+`funpairlist` is a vector of pairs. Each pair includes the function to include and
+a tuple type of the arguments to that function. For example, here is the invocation to
 return a wasm ModuleState with the `mathfun` and `anotherfun` included.
 
     m = wasm_module([mathfun => Tuple{Float64},
@@ -341,16 +344,55 @@ return a wasm ModuleState with the `mathfun` and `anotherfun` included.
 """
 function wasm_module(funpairlist)
   m = ModuleState()
-  for (fun, tt) in funpairlist
+  for (fun, tt, usebasename) in funpairlist
     internalname = createfunname(fun, tt)
-    exportedname = funname(fun)
-    m.funcs[internalname] = Func(:name, [], [], [], Block([]))
+    exportedname = usebasename ? funname(fun) : funname(fun, tt)
+    m.funcs[internalname] = nothing
     m.funcs[internalname] = code_wasm(m, fun, tt)
-    m.exports[exportedname] = Export(exportedname, internalname, :func)
+    name_used = true
+    get!(m.exports, exportedname) do
+      name_used = false
+      Export(exportedname, internalname, :func)
+    end
+    name_used && (funname(fun, tt) |> n -> m.exports[n] = Export(n, internalname, :func))
   end
   if length(m.data) > 0
     m.exports[:memory] = Export(:memory, :memory, :memory)
   end
   return Module(FuncType[], collect(values(m.funcs)), Table[], [Mem(:m, 1, nothing)], Global[], Elem[],
                 collect(values(m.data)), Ref(0), collect(values(m.imports)), collect(values(m.exports)))
+end
+
+# getSymbols =
+
+function unwrapArgs(args)
+  gs = Vector([[]])
+  for arg in args
+    if isexpr(arg, :tuple)
+      gs = vcat([map!(g -> push!(g, a), deepcopy(gs)) for a in arg.args]...)
+    else
+      map!(g -> push!(g, arg), gs)
+    end
+  end
+  return gs
+end
+
+macro wasm(ex...)
+  fs = Vector()
+  postwalk(Expr(:block, ex...)) do x
+    if isexpr(x, :call)
+      args = x.args[2:end]
+      gs = Vector()
+      if !isempty(args) && isexpr(args[1], :vect)
+        all(e->length(e.args)==length(args[1].args), args) || error("[] used for sum.")
+        push!(gs, vcat(vcat([map(a -> a.args[i], args) |> unwrapArgs for i in 1:length(args[1].args)]...))...)
+      else
+        gs = unwrapArgs(args)
+      end
+      usebasename = length(gs) == 1
+      push!(fs, map(g -> :($(esc(x.args[1])), Tuple{$(esc.(g)...)}, $usebasename), gs)...)
+    end
+    x
+  end
+  return :(wasm_module([$(fs...)]))
 end
