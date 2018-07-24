@@ -201,6 +201,22 @@ wasmcalls[GlobalRef(Base, :sitofp)] = function (i, T, x)
   Expr(:call, Convert(WType(T), WType(X), :convert_s), x)
 end
 
+wasmcalls[GlobalRef(Core, :getfield)] = function (i, T, x)
+  X = exprtype(i, x)
+  struct_ = exprtype(i, T)
+  field_type = fieldtype(struct_, x.value)
+  offset = fieldoffset(struct_, findfirst(fieldnames(struct_), x.value))
+  Expr(:call, MemoryOp(WType(field_type), :load, field_type, offset, 1), T)
+end
+
+wasmcalls[GlobalRef(Core, :setfield!)] = function (i, T, x, v)
+  X = exprtype(i, x)
+  struct_ = exprtype(i, T)
+  field_type = fieldtype(struct_, x.value)
+  offset = fieldoffset(struct_, findfirst(fieldnames(struct_), x.value))
+  Expr(:call, MemoryOp(WType(field_type), :store, field_type, offset, 1), T, v)
+end
+
 wasmcall(i, f, xs...) =
   haskey(wasmcalls, f) ? wasmcalls[f](i, xs...) :
   Expr(:call, wasmfunc(f, exprtype.(i, xs)...), xs...)
@@ -341,6 +357,7 @@ return a wasm ModuleState with the `mathfun` and `anotherfun` included.
 """
 function wasm_module(funpairlist)
   m = ModuleState()
+  @show funpairlist
   for (fun, tt) in funpairlist
     internalname = createfunname(fun, tt)
     exportedname = funname(fun)
@@ -352,5 +369,5 @@ function wasm_module(funpairlist)
     m.exports[:memory] = Export(:memory, :memory, :memory)
   end
   return Module(FuncType[], collect(values(m.funcs)), Table[], [Mem(:m, 1, nothing)], Global[], Elem[],
-                collect(values(m.data)), Ref(0), collect(values(m.imports)), collect(values(m.exports)))
+                collect(values(m.data)), nothing, collect(values(m.imports)), collect(values(m.exports)))
 end
