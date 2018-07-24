@@ -6,10 +6,10 @@ using WebAssembly: WType, Func, Module, FuncType, Func, Table, Mem, Global, Elem
 struct ModuleState
   imports::Dict{Symbol, Import}
   exports::Dict{Symbol, Export}
-  funcs::Dict{Symbol, Func}
+  funcs::Dict{Symbol, Union{Void, Func}}
   data::Dict{Symbol, Data}
 end
-ModuleState() = ModuleState(Dict{Symbol, Import}(), Dict{Symbol, Export}(), Dict{Symbol, Func}(), Dict{Symbol, Data}())
+ModuleState() = ModuleState(Dict{Symbol, Import}(), Dict{Symbol, Export}(), Dict{Symbol, Union{Void, Func}}(), Dict{Symbol, Data}())
 
 walk(x, inner, outer) = outer(x)
 
@@ -201,6 +201,34 @@ wasmcalls[GlobalRef(Base, :sitofp)] = function (i, T, x)
   Expr(:call, Convert(WType(T), WType(X), :convert_s), x)
 end
 
+wasmcalls[GlobalRef(Core, :getfield)] = function (i, T, x)
+  X = exprtype(i, x)
+  struct_ = exprtype(i, T)
+  field_type = fieldtype(struct_, x.value)
+  offset = field_offset(struct_, x.value)
+  Expr(:call, MemoryOp(WType(field_type), :load, storetype(field_type), offset, 1), T)
+end
+
+storetype(t) = t <: Integer ? t : WebAssembly.jltype(WType(t))
+
+# Sadly necessary because of the difference in size of pointers
+function field_offset(T, f)
+  i = findfirst(fieldnames(T), f)
+  offset = UInt(0)
+  for j in 1:i-1
+    offset += sizeof(WebAssembly.jltype(WType(fieldtype(T, j))))
+  end
+  return offset
+end
+
+wasmcalls[GlobalRef(Core, :setfield!)] = function (i, T, x, v)
+  X = exprtype(i, x)
+  struct_ = exprtype(i, T)
+  field_type = fieldtype(struct_, x.value)
+  offset = field_offset(struct_, x.value)
+  Expr(:call, MemoryOp(WType(field_type), :store, storetype(field_type), offset, 1), T, v)
+end
+
 wasmcall(i, f, xs...) =
   haskey(wasmcalls, f) ? wasmcalls[f](i, xs...) :
   Expr(:call, wasmfunc(f, exprtype.(i, xs)...), xs...)
@@ -240,8 +268,8 @@ function lowercalls(m::ModuleState, c::CodeInfo, code)
 end
 
 function lower_invoke(m::ModuleState, args)
-  # This lowers the function invoked. `args` is the Any[] from the :invoke Expr. 
-  # If the function has not been compiled, compile it. 
+  # This lowers the function invoked. `args` is the Any[] from the :invoke Expr.
+  # If the function has not been compiled, compile it.
   # Generate the WASM call.
   tt = argtypes(args[1])
   name = createfunname(args[1], tt)
@@ -249,6 +277,7 @@ function lower_invoke(m::ModuleState, args)
     mi = args[1]
     ci = Base.uncompressed_ast(mi.def, mi.inferred)
     R = mi.rettype
+    m.funcs[name] = nothing
     m.funcs[name] = code_wasm(m::ModuleState, name, tt, ci, R)
   end
   return Expr(:call, Call(name), args[3:end]...)
@@ -256,7 +285,7 @@ end
 
 function lower_ccall(m::ModuleState, args)
   (fnname, env) = args[1]
-  name = Symbol(env, :_, fnname) 
+  name = Symbol(env, :_, fnname)
   m.imports[name] = Import(env, fnname, :func, map(WType, args[3]), WType(args[2]))
   return Expr(:call, Call(name), args[4:2:end]...)
 end
@@ -330,10 +359,10 @@ end
 """
     wasm_module(funpairlist)
 
-Return a compiled WebAssembly ModuleState that includes every function defined by `funpairlist`. 
-  
-`funpairlist` is a vector of pairs. Each pair includes the function to include and 
-a tuple type of the arguments to that function. For example, here is the invocation to 
+Return a compiled WebAssembly ModuleState that includes every function defined by `funpairlist`.
+
+`funpairlist` is a vector of pairs. Each pair includes the function to include and
+a tuple type of the arguments to that function. For example, here is the invocation to
 return a wasm ModuleState with the `mathfun` and `anotherfun` included.
 
     m = wasm_module([mathfun => Tuple{Float64},
@@ -341,10 +370,11 @@ return a wasm ModuleState with the `mathfun` and `anotherfun` included.
 """
 function wasm_module(funpairlist)
   m = ModuleState()
+  @show funpairlist
   for (fun, tt) in funpairlist
     internalname = createfunname(fun, tt)
     exportedname = funname(fun)
-    m.funcs[internalname] = Func(:name, [], [], [], Block([]))
+    m.funcs[internalname] = nothing
     m.funcs[internalname] = code_wasm(m, fun, tt)
     m.exports[exportedname] = Export(exportedname, internalname, :func)
   end
@@ -352,5 +382,16 @@ function wasm_module(funpairlist)
     m.exports[:memory] = Export(:memory, :memory, :memory)
   end
   return Module(FuncType[], collect(values(m.funcs)), Table[], [Mem(:m, 1, nothing)], Global[], Elem[],
-                collect(values(m.data)), Ref(0), collect(values(m.imports)), collect(values(m.exports)))
+                collect(values(m.data)), nothing, collect(values(m.imports)), collect(values(m.exports)))
+end
+
+macro wasm(ex)
+  fs = Vector()
+  postwalk(ex) do x
+    if isexpr(x, :call)
+      push!(fs, :($(esc(x.args[1])) => Tuple{$(esc.(x.args[2:end])...)}))
+    end
+    x
+  end
+  return :(wasm_module([$(fs...)]))
 end
