@@ -31,6 +31,7 @@ exprtype(code::CodeInfo, x::Expr) = x.typ
 exprtype(code::CodeInfo, x::QuoteNode) = typeof(x.value)
 exprtype(code::CodeInfo, x::SSAValue) = code.ssavaluetypes[x.id+1]
 exprtype(code::CodeInfo, x::SlotNumber) = code.slottypes[x.id]
+exprtype(code::CodeInfo, x::TypedSlot) = x.typ
 
 # We don't want SSAValues on a stack machine.
 # If it's only used once, just inline it.
@@ -211,20 +212,36 @@ wasmcalls[GlobalRef(Base, :sitofp)] = function (i, T, x)
 end
 
 wasmcalls[GlobalRef(Base, :arraylen)] = function (i, xs)
+  xs = Expr(:call, GlobalRef(Base, :add_int), xs, 8)
   a = Expr(:call, Call(Symbol("main/arraylen_", WType(eltype(exprtype(i, xs))))), xs)
   Expr(:call, Convert(WType(Int64), WType(Int32), :extend_u), a)
 end
 
 wasmcalls[GlobalRef(Base, :arraysize)] = function (i, xs, dim)
-  if dim == 1
-    return Expr(:call, Call(Symbol("main/arraylen_", WType(eltype(exprtype(i, xs))))), xs)
-  else
-    error("Multi dim arrays not supported")
+  # @show xs
+  # if dim == 1
+  #   return Expr(:call, Call(Symbol("main/arraylen_", WType(eltype(exprtype(i, xs))))), xs)
+  # else
+  #   error("Arraysize: Multi dim arrays not supported")
+  # end
+  # nop
+
+  # TODO: check dim against offset=4 (ndims)
+  # Expr(:call, MemoryOp())
+  # a = dim
+  a = Expr(:call, GlobalRef(Base, :sub_int), dim, 1)
+  if exprtype(i, dim) == Int64 # Will need to change this for wasm64
+    a = Expr(:call, Convert(WType(Int32), WType(Int64), :wrap), a)
   end
-  nop
+
+  # load the index in the shape array. The xs pointer should curently be pointing
+  # to it.
+  a = Expr(:call, Call(Symbol("main/arrayref_", WType(eltype(exprtype(i, xs))))), xs, a)
+  Expr(:call, Convert(WType(Int64), WType(Int32), :extend_u), a)
 end
 
 wasmcalls[GlobalRef(Base, :arrayref)] = function (i, xs, idx)
+  xs = Expr(:call, GlobalRef(Base, :add_int), xs, Int32(8))
   a = Expr(:call, GlobalRef(Base, :sub_int), idx, 1)
   if exprtype(i, idx) == Int64 # Will need to change this for wasm64
     a = Expr(:call, Convert(WType(Int32), WType(Int64), :wrap), a)
@@ -233,13 +250,13 @@ wasmcalls[GlobalRef(Base, :arrayref)] = function (i, xs, idx)
 end
 
 wasmcalls[GlobalRef(Base, :arrayset)] = function (i, xs, val, idx)
+  xs = Expr(:call, GlobalRef(Base, :add_int), xs, 8)
   a = Expr(:call, GlobalRef(Base, :sub_int), idx, 1)
   if exprtype(i, idx) == Int64
     a = Expr(:call, Convert(WType(Int32), WType(Int64), :wrap), a)
   end
   Expr(:call, Call(Symbol("main/arrayset_", WType(eltype(exprtype(i, xs))))), xs, val, a)
 end
-
 
 wasmcalls[GlobalRef(Base, :sext_int)] = function (i, T, x)
   T isa GlobalRef && (T = getfield(T.mod, T.name))
@@ -272,8 +289,10 @@ function lowercalls(m::ModuleState, c::CodeInfo, code)
       lower_invoke(m, x.args)
     elseif isexpr(x, :foreigncall)
       lower_ccall(m, x.args)
+    # elseif isexpr(x, :(=)) && (x.args[1] isa SlotNumber || x.args[1] isa TypedSlot)
     elseif isexpr(x, :(=)) && x.args[1] isa SlotNumber
       Expr(:call, SetLocal(false, x.args[1].id-2), x.args[2])
+    # elseif x isa SlotNumber || x isa TypedSlot
     elseif x isa SlotNumber
       Local(x.id-2)
     elseif isexpr(x, :gotoifnot)
@@ -338,6 +357,7 @@ lower(m::ModuleState, c::CodeInfo) = lowercalls(m, c, rmssa(c))
 towasm_(m::ModuleState, xs, is = Instruction[]) = (foreach(x -> towasm(m, x, is), xs); is)
 
 function towasm(m::ModuleState, x, is = Instruction[])
+  @show x
   if x isa Instruction
     push!(is, x)
   elseif isexpr(x, :block)
@@ -354,7 +374,7 @@ function towasm(m::ModuleState, x, is = Instruction[])
     push!(is, Const(deref(x)))
   elseif x isa LineNumberNode || isexpr(x, :inbounds) || isexpr(x, :meta) || x isa Void
   else
-    error("Can't convert to wasm: $x")
+    error("Can't convert to wasm: $x :: $(typeof(x))")
   end
   return is
 end
