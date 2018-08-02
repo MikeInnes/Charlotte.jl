@@ -34,7 +34,7 @@ walk(x, inner, outer) = outer(x)
 
 function walk(x::Expr, inner, outer)
   y = Expr(x.head, map(inner, x.args)...)
-  y.typ = x.typ
+  # y.typ = x.typ
   return outer(y)
 end
 
@@ -186,7 +186,7 @@ end
 function addLabels(blocks)
   stmts = []
   for i in eachindex(blocks)
-    push!(stmts, Base.LabelNode(i), blocks[i]...)
+    push!(stmts, Label(i), blocks[i]...)
   end
   return stmts
 end
@@ -249,6 +249,7 @@ end
 
 for (j, w) in vcat(int_binary_ops, float_binary_ops)
   wasmfuncs[GlobalRef(Base, j)] = function (A,B)
+    @show A
     Op(WType(A), w)
   end
 end
@@ -378,8 +379,11 @@ function lowercalls(m::ModuleState, c::IRCode, code)
     elseif x isa Core.GotoNode
       # @show "this never happens"
       Goto(false, x.label)
-    elseif x isa Base.LabelNode
-      Label(x.label)
+    # elseif x isa Label
+      # error()
+      # x
+    # elseif x isa Base.LabelNode
+      # Label(x.label)
     elseif x isa Core.Compiler.ReturnNode
       Expr(:call, Return(), x.val)
     elseif x isa Nothing
@@ -432,7 +436,6 @@ basename(m::Method) = m.name == :Type ? m.sig.parameters[1].parameters[1].name.n
 iscontrol(ex) = isexpr(ex, :while) || isexpr(ex, :if)
 
 function dePhi(c)
-
   addVars(c.stmts)
   @show Expr(:block, addLabels(rmPhiNodes(c))...)
 end
@@ -475,6 +478,14 @@ end
 
 function code_wasm(m::ModuleState, name::Symbol, A, cinfo::CodeInfo, R)
   ircode = Core.Compiler.inflate_ir(cinfo)
+  # @show ircode.argtypes
+  # @show A.parameters
+  for i in 2:length(ircode.argtypes)
+    ircode.argtypes[i] = A.parameters[i-1]
+  end
+  # ircode.argtypes[2:length(ircode.argtypes)] = A.parameters[1:end]
+  # ircode.argtypes = [t for t in A.parameters]#vcat(A, R)
+  # @show ircode.argtypes
 
   # This is being calculated twice but once the register allocation is changed
   # it won't work anymore anyway.
