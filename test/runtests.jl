@@ -1,6 +1,6 @@
 using Charlotte
 using WebAssembly
-using Base.Test
+using Test
 
 
 # @testset "Import" begin

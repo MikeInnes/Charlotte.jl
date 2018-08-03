@@ -61,7 +61,7 @@ function loop_next(bs, label)
 end
 
 # NOTE: this will break if arbitrary gotos are used.
-function restructure(bs::Associative, entries = 1, loops = [], cond = nothing)
+function restructure(bs::AbstractDict, entries = 1, loops = [], cond = nothing)
   if isempty(entries)
     []
   elseif length(entries) == 1

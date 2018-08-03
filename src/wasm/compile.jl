@@ -1,5 +1,5 @@
 using Base.Meta
-import Base: CodeInfo, SSAValue, SlotNumber, GotoNode, NewvarNode, LabelNode
+import Base: CodeInfo, SSAValue, SlotNumber, GotoNode, NewvarNode
 using WebAssembly, WebAssembly.Instructions
 using WebAssembly: WType, Func, Module, FuncType, Func, Table, Mem, Global, Elem, Data, Import, Export, Block
 
@@ -50,7 +50,7 @@ exprtype(code::CodeInfo, x::Expr) = x.typ
 exprtype(code::CodeInfo, x::QuoteNode) = typeof(x.value)
 exprtype(code::CodeInfo, x::SSAValue) = code.ssavaluetypes[x.id+1]
 exprtype(code::CodeInfo, x::SlotNumber) = code.slottypes[x.id]
-exprtype(code::CodeInfo, x::TypedSlot) = x.typ
+# exprtype(code::CodeInfo, x::TypedSlot) = x.typ
 
 exprtype(code::IRCode, x) = typeof(deref(x))
 exprtype(code::IRCode, x::Expr) = x.typ
@@ -250,7 +250,6 @@ end
 
 for (j, w) in vcat(int_binary_ops, float_binary_ops)
   wasmfuncs[GlobalRef(Base, j)] = function (A,B)
-    @show A
     Op(WType(A), w)
   end
 end
@@ -341,8 +340,6 @@ end
 wasmcalls[GlobalRef(Base, :checked_trunc_sint)] = function (i, T, x)
   T isa GlobalRef && (T = getfield(T.mod, T.name))
   X = exprtype(i, x)
-  @show (T, X)
-  @show T == Int32 && X == Int64
   (T == Int32 && X == Int64) && return Expr(:call, Convert(WType(T), WType(X), :wrap), x)
   Expr(:call, Convert(WType(T), WType(X), :trunc_s), x)
 end
@@ -468,7 +465,6 @@ function lower_invoke(m::ModuleState, args)
   # Generate the WASM call.
   tt = argtypes(args[1])
   name = createfunname(args[1], tt)
-  @show keys(m.funcs)
   if !haskey(m.funcs, name)
     mi = args[1]
     ci = Base.uncompressed_ast(mi.def, mi.inferred)
@@ -502,7 +498,7 @@ createfunname(fun::Function, argtypes) = createfunname(funname(fun), argtypes)
 
 createfunname(mi::Core.MethodInstance, argtypes) = createfunname(mi.def.name, argtypes)
 
-basename(f::Function) = Base.function_name(f)
+basename(f::Function) = Base.nameof(f)
 basename(f::Core.IntrinsicFunction) = Symbol(unsafe_string(ccall(:jl_intrinsic_name, Cstring, (Core.IntrinsicFunction,), f)))
 basename(x::GlobalRef) = x.name
 basename(m::Core.MethodInstance) = basename(m.def)
@@ -512,7 +508,7 @@ iscontrol(ex) = isexpr(ex, :while) || isexpr(ex, :if)
 
 function dePhi(c)
   addVars(c.stmts)
-  @show Expr(:block, addLabels(rmPhiNodes(c))...)
+  Expr(:block, addLabels(rmPhiNodes(c))...)
 end
 
 lower(m::ModuleState, c::IRCode) = lowercalls(m, c, dePhi(c))
@@ -522,7 +518,6 @@ lower(m::ModuleState, c::IRCode) = lowercalls(m, c, dePhi(c))
 towasm_(m::ModuleState, xs, is = Instruction[]) = (foreach(x -> towasm(m, x, is), xs); is)
 
 function towasm(m::ModuleState, x, is = Instruction[])
-  @show x
   if x isa Instruction
     push!(is, x)
   elseif isexpr(x, :block)
@@ -537,14 +532,14 @@ function towasm(m::ModuleState, x, is = Instruction[])
     push!(is, Block([Loop(towasm_(m, x.args[2].args))]))
   elseif deref(x) isa Number
     push!(is, Const(deref(x)))
-  elseif x isa LineNumberNode || isexpr(x, :inbounds) || isexpr(x, :meta) || x isa Void
+  elseif x isa LineNumberNode || isexpr(x, :inbounds) || isexpr(x, :meta) || x == nothing
   else
     error("Can't convert to wasm: $x :: $(typeof(x))")
   end
   return is
 end
 
-funname(f::Function) = Base.function_name(f)
+funname(f::Function) = Base.nameof(f)
 funname(s::Symbol) = s
 
 function code_wasm(m::ModuleState, ex, A)
