@@ -53,7 +53,7 @@ exprtype(code::CodeInfo, x::SlotNumber) = code.slottypes[x.id]
 # exprtype(code::CodeInfo, x::TypedSlot) = x.typ
 
 exprtype(code::IRCode, x) = typeof(deref(x))
-exprtype(code::IRCode, x::Expr) = Any#x.typ
+exprtype(code::IRCode, x::Expr) = error("Expr.typ no longer exists")#x.typ
 exprtype(code::IRCode, x::QuoteNode) = typeof(x.value)
 exprtype(code::IRCode, x::SSAValue) = code.types[x.id]
 exprtype(code::IRCode, x::Argument) = code.argtypes[x.n]
@@ -292,7 +292,7 @@ wasmcalls[GlobalRef(Base, :flipsign_int)] = function (i, x, y)
   T = exprtype(i, x)
   cond = Expr(:call, GlobalRef(Base, :slt_int), x, T(0))
   sign = Expr(:call, GlobalRef(Base, :ifelse), cond, T(-1), T(1))
-  sign.typ = T
+  # sign.typ = T
   Expr(:call, nop,
     Expr(:call, GlobalRef(Base, :mul_int), sign, x))
 end
@@ -324,8 +324,9 @@ end
 wasmcalls[GlobalRef(Core, :trunc_int)] = function (i, T, x)
   T isa GlobalRef && (T = getfield(T.mod, T.name))
   X = exprtype(i, x)
+  WType(T) == WType(Int32) && WType(X) == WType(Int64) && return Expr(:call, Convert(WType(T), WType(X), :wrap), x)
   WType(T) == WType(X) && return Expr(:call, nop, x)
-  X isa Signed ? Expr(:call, Convert(WType(T), WType(X), :trunc_s), x) :
+  T isa Signed ? Expr(:call, Convert(WType(T), WType(X), :trunc_s), x) :
   Expr(:call, Convert(WType(T), WType(X), :trunc_u), x)
 end
 
@@ -378,25 +379,96 @@ wasmcalls[GlobalRef(Base, :arraysize)] = function (i, xs, dim)
 end
 
 # TODO: Ignoring the bool because I don't know what it does.
-wasmcalls[GlobalRef(Base, :arrayref)] = function (i, bool, xs, idx)
-  p = Expr(:call, GlobalRef(Base, :add_int), xs, Int32(8))
-  a = Expr(:call, GlobalRef(Base, :sub_int), idx, 1)
-  @show typeof(idx)
-  if exprtype(i, idx) == Int64 # Will need to change this for wasm64
-    a = Expr(:call, Convert(WType(Int32), WType(Int64), :wrap), a)
+# wasmcalls[GlobalRef(Base, :arrayref)] = function (i, bool, xs, idx)
+#   p = Expr(:call, GlobalRef(Base, :add_int), xs, Int32(8))
+#   a = Expr(:call, GlobalRef(Base, :sub_int), idx, 1)
+#   @show typeof(idx)
+#   if exprtype(i, idx) == Int64 # Will need to change this for wasm64
+#     a = Expr(:call, Convert(WType(Int32), WType(Int64), :wrap), a)
+#   end
+#   @show typeof(xs)
+#   @show xs
+#   a = Expr(:call, Call(Symbol("main/arrayref_", WType(eltype(exprtype(i, xs))))), p, a)
+# end
+
+wasmcalls[GlobalRef(Base, :arrayref)] = function (i, bool, xs, idxs...)
+  # @show typeof(idxs |> Vector)
+  idxs = Any[t for t in idxs]
+  @show idxs
+  # for i in eachindex(idxs)
+    # println("no")
+  # end
+  map!(idxs, idxs) do idx
+    println("we're here")
+    t = exprtype(i, idx)
+    # idx = Expr(:call, GlobalRef(Base, :sub_int), idx, 1)
+    if t == Int64
+      Int32, Expr(:call, Convert(WType(Int32), WType(Int64), :wrap), idx)
+    else
+      t, idx
+    end
   end
+  @show idxs
+  idx = Expr(:call, :convertIndex, xs, idxs...)
+  p = Expr(:call, GlobalRef(Base, :add_int), xs, Int32(8))
+  idx = Expr(:invoke_new, convertIndex, collect(zip((pushfirst!(idxs, (exprtype(i, xs), xs)))...))...) #[:($id::$t) for (t, id) in idxs]...)
+  # idx = Expr(:invoke_new, convertIndex, collect(zip(idxs...))...)
+  @show idx
+  # @show typeof(idx)
+  # if exprtype(i, idx) == Int64 # Will need to change this for wasm64
+    # a = Expr(:call, Convert(WType(Int32), WType(Int64), :wrap), a)
+  # end
   @show typeof(xs)
   @show xs
-  a = Expr(:call, Call(Symbol("main/arrayref_", WType(eltype(exprtype(i, xs))))), p, a)
+  a = Expr(:call, Call(Symbol("main/arrayref_", WType(eltype(exprtype(i, xs))))), p, idx)
 end
 
-wasmcalls[GlobalRef(Base, :arrayset)] = function (i, xs, val, idx)
-  p = Expr(:call, GlobalRef(Base, :add_int), xs, 8)
-  a = Expr(:call, GlobalRef(Base, :sub_int), idx, 1)
-  if exprtype(i, idx) == Int64
-    a = Expr(:call, Convert(WType(Int32), WType(Int64), :wrap), a)
+function convertIndex(array, x, y)
+  return Int32((x - one(x)) * stride(array, 1) + (y - one(y)) * stride(array, 2))
+end
+
+function convertIndex(array, x)
+  return Int32(x - one(x))
+end
+
+# wasmcalls[GlobalRef(Base, :arrayset)] = function (i, xs, val, idx)
+#   p = Expr(:call, GlobalRef(Base, :add_int), xs, 8)
+#   a = Expr(:call, GlobalRef(Base, :sub_int), idx, 1)
+#   if exprtype(i, idx) == Int64
+#     a = Expr(:call, Convert(WType(Int32), WType(Int64), :wrap), a)
+#   end
+#   Expr(:call, Call(Symbol("main/arrayset_", WType(eltype(exprtype(i, xs))))), p, val, a)
+# end
+
+wasmcalls[GlobalRef(Base, :arrayset)] = function (i, bool, xs, val, idxs...)
+  # @show typeof(idxs |> Vector)
+  idxs = Any[t for t in idxs]
+  @show idxs
+  # for i in eachindex(idxs)
+    # println("no")
+  # end
+  map!(idxs, idxs) do idx
+    println("we're here")
+    t = exprtype(i, idx)
+    # idx = Expr(:call, GlobalRef(Base, :sub_int), idx, 1)
+    if t == Int64
+      Int32, Expr(:call, Convert(WType(Int32), WType(Int64), :wrap), idx)
+    else
+      t, idx
+    end
   end
-  Expr(:call, Call(Symbol("main/arrayset_", WType(eltype(exprtype(i, xs))))), p, val, a)
+  @show idxs
+  idx = Expr(:call, :convertIndex, xs, idxs...)
+  p = Expr(:call, GlobalRef(Base, :add_int), xs, Int32(8))
+  idx = Expr(:invoke_new, convertIndex, collect(zip((pushfirst!(idxs, (exprtype(i, xs), xs)))...))...) #[:($id::$t) for (t, id) in idxs]...)
+  @show idx
+  # @show typeof(idx)
+  # if exprtype(i, idx) == Int64 # Will need to change this for wasm64
+    # a = Expr(:call, Convert(WType(Int32), WType(Int64), :wrap), a)
+  # end
+  @show typeof(xs)
+  @show xs
+  a = Expr(:call, Call(Symbol("main/arrayset_", WType(eltype(exprtype(i, xs))))), p, val, idx)
 end
 
 wasmcalls[GlobalRef(Core, :sext_int)] = function (i, T, x)
@@ -432,7 +504,7 @@ end
 # end
 
 wasmcall(i, f, xs...) =
-  haskey(wasmcalls, @show f) ? wasmcalls[f](i, xs...) :
+  haskey(wasmcalls, f) ? wasmcalls[f](i, xs...) :
   Expr(:call, wasmfunc(f, exprtype.(i, xs)...), xs...)
 
 isprimitive(x) = false
@@ -483,6 +555,8 @@ function lowercalls(m::ModuleState, c::IRCode, code)
       end
     elseif x isa Nothing
       Expr(:call, Nop())
+    elseif (isexpr(x, :invoke_new))
+      lower_new(m, x.args)
     else
       x
     end
@@ -508,6 +582,29 @@ function lower_invoke(m::ModuleState, args)
   return Expr(:call, Call(name), args[3:end]...)
 end
 
+function lower_new(m::ModuleState, args)
+  @show args
+
+  tt = Tuple{args[2]...}
+  @show tt
+  name = createfunname(args[1], tt)
+  if !haskey(m.funcs, name)
+    # mi = args[1]
+    # @show mi.inferred
+    # ci = Base.uncompressed_ast(mi.def, mi.inferred)
+    # ci = Base.uncompressed_ast(mi)
+    # @show ci
+    # R = mi.rettype
+    cinfo, R = code_typed(args[1], tt)[1]
+    # code_wasm(m, createfunname(ex, A), A, cinfo, R)
+    m.funcs[name] = code_wasm(m::ModuleState, name, tt, cinfo, R)
+  end
+  # @show args[3]
+  return Expr(:call, Call(name), args[3]...)
+end
+
+
+# This doesn't work anymore
 function lower_ccall(m::ModuleState, args)
   (fnname, env) = args[1]
   name = Symbol(env, :_, fnname)
@@ -518,13 +615,13 @@ end
 argtypes(x::Core.MethodInstance) = Tuple{x.specTypes.parameters[2:end]...}
 argtypes(x::Method) = Tuple{x.sig.parameters[2:end]...}
 
-createfunname(fun::Symbol, argtypes::UnionAll) = Symbol(fun, "_", join(argtypes, "_"))
-createfunname(fun::Symbol, argtypes) = Symbol(fun, "_", join(collect(argtypes.parameters), "_"))
+createfunname(fun::Symbol, argtypes::UnionAll) = Symbol(fun, "_", fixName(join(argtypes, "_")))
+createfunname(fun::Symbol, argtypes) = Symbol(fun, "_", fixName(join(collect(argtypes.parameters), "_")))
 createfunname(fun::Function, argtypes) = createfunname(funname(fun), argtypes)
 # createfunname(funtyp::DataType, argtypes) = Symbol(funtyp, "_", join(collect(argtypes.parameters), "_"))
 # createfunname(mi::Core.MethodInstance, argtypes) = createfunname(mi.def.sig.parameters[1], argtypes)
 
-# fixName(s) = replace(replace(s, r"{|}|(|)|[|]" => ""), "," => ":")
+fixName(s) = replace(replace(s, r"{|}|(|)|[|]" => ""), "," => ":")
 #
 # createfunname(fun::Symbol, argtypes) = Symbol(fun, "_", fixName(join(collect(argtypes.parameters), "_")))
 # createfunname(fun::Function, argtypes) = createfunname(typeof(fun), argtypes)
