@@ -53,7 +53,7 @@ exprtype(code::CodeInfo, x::SlotNumber) = code.slottypes[x.id]
 # exprtype(code::CodeInfo, x::TypedSlot) = x.typ
 
 exprtype(code::IRCode, x) = typeof(deref(x))
-exprtype(code::IRCode, x::Expr) = x.typ
+exprtype(code::IRCode, x::Expr) = Any#x.typ
 exprtype(code::IRCode, x::QuoteNode) = typeof(x.value)
 exprtype(code::IRCode, x::SSAValue) = code.types[x.id]
 exprtype(code::IRCode, x::Argument) = code.argtypes[x.n]
@@ -158,8 +158,9 @@ function rmPhiNodes(ir)
   for block in ir.cfg.blocks
     for stmt in ir.stmts[block.stmts]
       # Find the phinodes, restructure
-
-      if isPhi(stmt)
+      if isexpr(stmt, :(=)) && stmt.args[2] isa Compiler.PiNode
+        stmt.args[2] = stmt.args[2].val
+      elseif isPhi(stmt)
         phi = stmt.args[2]
         for i in eachindex(phi.edges)
           s = blocked[phi.edges[i]]
@@ -267,9 +268,7 @@ for (j, w) in vcat(int_binary_ops, float_binary_ops)
   end
 end
 
-wasmfuncs[GlobalRef(Base, :not_int)] = function (A)
-  Op(WType(A), :eqz)
-end
+
 
 wasmfunc(f, xs...) = wasmfuncs[f](xs...)
 
@@ -322,14 +321,13 @@ wasmcalls[GlobalRef(Base, :bitcast)] = function (i, T, x)
 end
 
 # # Just try having it exactly the same who knows.
-# wasmcalls[GlobalRef(Core, :trunc_int)] = function (i, T, x)
-#   Expr(:call, nop, x)
-#   # T isa GlobalRef && (T = getfield(T.mod, T.name))
-#   # X = exprtype(i, x)
-#   # WType(T) == WType(X) && return Expr(:call, nop, x)
-#   # @assert sizeof(T) == sizeof(X)
-#   # Expr(:call, Convert(WType(T), WType(X), :reinterpret), x)
-# end
+wasmcalls[GlobalRef(Core, :trunc_int)] = function (i, T, x)
+  T isa GlobalRef && (T = getfield(T.mod, T.name))
+  X = exprtype(i, x)
+  WType(T) == WType(X) && return Expr(:call, nop, x)
+  X isa Signed ? Expr(:call, Convert(WType(T), WType(X), :trunc_s), x) :
+  Expr(:call, Convert(WType(T), WType(X), :trunc_u), x)
+end
 
 wasmcalls[GlobalRef(Base, :fptosi)] = function (i, T, x)
   T isa GlobalRef && (T = getfield(T.mod, T.name))
@@ -351,8 +349,8 @@ wasmcalls[GlobalRef(Base, :sitofp)] = function (i, T, x)
 end
 
 wasmcalls[GlobalRef(Base, :arraylen)] = function (i, xs)
-  xs = Expr(:call, GlobalRef(Base, :add_int), xs, 8)
-  a = Expr(:call, Call(Symbol("main/arraylen_", WType(eltype(exprtype(i, xs))))), xs)
+  p = Expr(:call, GlobalRef(Base, :add_int), xs, (exprtype(i, xs) |> WType |> WebAssembly.jltype)(8))
+  a = Expr(:call, Call(Symbol("main/arraylen_", WType(eltype(exprtype(i, xs))))), p)
   Expr(:call, Convert(WType(Int64), WType(Int32), :extend_u), a)
 end
 
@@ -379,22 +377,32 @@ wasmcalls[GlobalRef(Base, :arraysize)] = function (i, xs, dim)
   Expr(:call, Convert(WType(Int64), WType(Int32), :extend_u), a)
 end
 
-wasmcalls[GlobalRef(Base, :arrayref)] = function (i, xs, idx)
-  xs = Expr(:call, GlobalRef(Base, :add_int), xs, Int32(8))
+# TODO: Ignoring the bool because I don't know what it does.
+wasmcalls[GlobalRef(Base, :arrayref)] = function (i, bool, xs, idx)
+  p = Expr(:call, GlobalRef(Base, :add_int), xs, Int32(8))
   a = Expr(:call, GlobalRef(Base, :sub_int), idx, 1)
+  @show typeof(idx)
   if exprtype(i, idx) == Int64 # Will need to change this for wasm64
     a = Expr(:call, Convert(WType(Int32), WType(Int64), :wrap), a)
   end
-  a = Expr(:call, Call(Symbol("main/arrayref_", WType(eltype(exprtype(i, xs))))), xs, a)
+  @show typeof(xs)
+  @show xs
+  a = Expr(:call, Call(Symbol("main/arrayref_", WType(eltype(exprtype(i, xs))))), p, a)
 end
 
 wasmcalls[GlobalRef(Base, :arrayset)] = function (i, xs, val, idx)
-  xs = Expr(:call, GlobalRef(Base, :add_int), xs, 8)
+  p = Expr(:call, GlobalRef(Base, :add_int), xs, 8)
   a = Expr(:call, GlobalRef(Base, :sub_int), idx, 1)
   if exprtype(i, idx) == Int64
     a = Expr(:call, Convert(WType(Int32), WType(Int64), :wrap), a)
   end
-  Expr(:call, Call(Symbol("main/arrayset_", WType(eltype(exprtype(i, xs))))), xs, val, a)
+  Expr(:call, Call(Symbol("main/arrayset_", WType(eltype(exprtype(i, xs))))), p, val, a)
+end
+
+wasmcalls[GlobalRef(Core, :sext_int)] = function (i, T, x)
+  T isa GlobalRef && (T = getfield(T.mod, T.name))
+  X = exprtype(i, x)
+  Expr(:call, Convert(WType(T), WType(X), :extend_s), x)
 end
 
 wasmcalls[GlobalRef(Base, :sext_int)] = function (i, T, x)
@@ -409,8 +417,22 @@ wasmcalls[GlobalRef(Base, :zext_int)] = function (i, T, x)
   Expr(:call, Convert(WType(T), WType(X), :extend_u), x)
 end
 
+wasmcalls[GlobalRef(Base, :not_int)] = function (i, x)
+  T = exprtype(i, x)
+  T == Bool ?
+  Expr(:call, Op(WType(T), :eqz), x) :
+  Expr(:call, Op(WType(T), :xor), x, T(-1))
+end
+
+# wasmfuncs[GlobalRef(Base, :not_int)] = function (A)
+# end
+
+# wasmcalls[GlobalRef(Base, :not_int)] = function (i, x)
+#   Expr(:call, GlobalRef(Base, :xor), x, -1)
+# end
+
 wasmcall(i, f, xs...) =
-  haskey(wasmcalls, f) ? wasmcalls[f](i, xs...) :
+  haskey(wasmcalls, @show f) ? wasmcalls[f](i, xs...) :
   Expr(:call, wasmfunc(f, exprtype.(i, xs)...), xs...)
 
 isprimitive(x) = false
@@ -422,18 +444,22 @@ function lowercalls(m::ModuleState, c::IRCode, code)
   num_args = length(c.argtypes)
   prewalk(code) do x
     # @show x, typeof(x)
-    if isexpr(x, :call) && deref(x.args[1]) == Base.throw
+    # @show x, typeof(x)
+    if (isexpr(x, :invoke) && deref(x.args[2]) == Core.throw_inexacterror) || (isexpr(x, :call) && deref(x.args[1]) == Base.throw)
+      # @show deref(x.args[2])
       unreachable
     elseif (isexpr(x, :call) && isprimitive(x.args[1]))
+      # @show x.args[1]
+      # @show c
       wasmcall(c, x.args...)
     elseif isexpr(x, :invoke)
       lower_invoke(m, x.args)
     elseif isexpr(x, :foreigncall)
       lower_ccall(m, x.args)
     elseif isexpr(x, :(=)) && x.args[1] isa SSAValue
-      Expr(:call, SetLocal(false, x.args[1].id + num_args -1), x.args[2])
+      Expr(:call, SetLocal(false, x.args[1].id + num_args -2), x.args[2])
     elseif x isa SSAValue
-      Local(x.id+num_args-1)
+      Local(x.id+num_args-2)
     elseif x isa Argument
       Local(x.n-2)
     elseif x isa Compiler.GotoIfNot
@@ -450,7 +476,11 @@ function lowercalls(m::ModuleState, c::IRCode, code)
     # elseif x isa Base.LabelNode
       # Label(x.label)
     elseif x isa Core.Compiler.ReturnNode
-      Expr(:call, Return(), x.val)
+      if isdefined(x, :val)
+        Expr(:call, Return(), x.val)
+      else
+        unreachable
+      end
     elseif x isa Nothing
       Expr(:call, Nop())
     else
@@ -463,11 +493,15 @@ function lower_invoke(m::ModuleState, args)
   # This lowers the function invoked. `args` is the Any[] from the :invoke Expr.
   # If the function has not been compiled, compile it.
   # Generate the WASM call.
+  println("just invoke the function")
   tt = argtypes(args[1])
   name = createfunname(args[1], tt)
   if !haskey(m.funcs, name)
     mi = args[1]
+    # @show mi.inferred
     ci = Base.uncompressed_ast(mi.def, mi.inferred)
+    # ci = Base.uncompressed_ast(mi)
+    @show ci
     R = mi.rettype
     m.funcs[name] = code_wasm(m::ModuleState, name, tt, ci, R)
   end
