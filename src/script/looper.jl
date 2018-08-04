@@ -47,8 +47,8 @@ function accessible(blocks, label, ignore = ())
   nu = branches(blocks[label], ignore)
   seen = Int[]
   while !isempty(nu)
-    nu[1] in seen && (shift!(nu); continue)
-    push!(seen, shift!(nu))
+    nu[1] in seen && (popfirst!(nu); continue)
+    push!(seen, popfirst!(nu))
     append!(nu, branches(blocks[seen[end]], ignore))
   end
   return seen
