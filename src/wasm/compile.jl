@@ -59,27 +59,6 @@ exprtype(code::IRCode, x::SSAValue) = code.types[x.id]
 exprtype(code::IRCode, x::Argument) = code.argtypes[x.n]
 # exprtype(code::CodeInfo, x::SlotNumber) = code.slottypes[x.id]
 
-# apply_rhs(f, x) =
-#     isexpr(x, :(=)) ?
-#       Expr(:(=), x.args[1], f(x.args[2])) :
-#       f(x)
-#
-# function symbolmap(f, stmt)
-#   urs = Core.Compiler.userefs(stmt)
-#   for op in urs
-#     val = op[]
-#     op[] = f(val)
-#   end
-#   return urs[]
-# end
-#
-# function ssawalk(f, stmts)
-#   for i in eachindex(stmts)
-#     stmts[i] = symbolmap(f, stmts[i])
-#   end
-#   return stmts
-# end
-
 function rmCompilerArgs(stmts)
   isArg(x) = x isa Core.Compiler.Argument
   for i in eachindex(stmts)
@@ -157,13 +136,6 @@ function addLabels(blocks)
   end
   return stmts
 end
-
-# function rmssa(c)
-#   is = copy(c.code)
-#   while is[1] isa NewvarNode shift!(is) end
-#   ex = Expr(:block, inlinessa(is)...)
-#   ssalocals(c, ex)
-# end
 
 # Julia -> WASM expression
 
@@ -426,11 +398,7 @@ function lowercalls(m::ModuleState, c::IRCode, code)
     elseif x isa Core.GotoNode
       Goto(false, x.label)
     elseif x isa Core.Compiler.ReturnNode
-      if isdefined(x, :val)
-        Expr(:call, Return(), x.val)
-      else
-        unreachable
-      end
+      isdefined(x, :val) ? Expr(:call, Return(), x.val) : unreachable
     elseif x isa Nothing
       Expr(:call, Nop())
     elseif isexpr(x, :invoke_new)
@@ -451,7 +419,6 @@ function lower_invoke(m::ModuleState, args)
   if !haskey(m.funcs, name)
     mi = args[1]
     ci = Base.uncompressed_ast(mi.def, mi.inferred)
-    @show ci
     R = mi.rettype
     m.funcs[name] = code_wasm(m::ModuleState, name, tt, ci, R)
   end
@@ -484,15 +451,9 @@ createfunname(fun::Symbol, argtypes::UnionAll) = Symbol(fun, "_", fixName(join(a
 createfunname(fun::Symbol, argtypes) = Symbol(fun, "_", fixName(join(collect(argtypes.parameters), "_")))
 createfunname(fun::Function, argtypes) = createfunname(funname(fun), argtypes)
 # createfunname(funtyp::DataType, argtypes) = Symbol(funtyp, "_", join(collect(argtypes.parameters), "_"))
-# createfunname(mi::Core.MethodInstance, argtypes) = createfunname(mi.def.sig.parameters[1], argtypes)
-
-fixName(s) = replace(replace(s, r"{|}|(|)|[|]" => ""), "," => ":")
-#
-# createfunname(fun::Symbol, argtypes) = Symbol(fun, "_", fixName(join(collect(argtypes.parameters), "_")))
-# createfunname(fun::Function, argtypes) = createfunname(typeof(fun), argtypes)
-# createfunname(funtyp::DataType, argtypes) = Symbol(funtyp, "_", fixName(join(collect(argtypes.parameters), "_")))
-
 createfunname(mi::Core.MethodInstance, argtypes) = createfunname(mi.def.name, argtypes)
+
+fixName(s) = replace(replace(replace(s, r"\{|\(|\[" => "<") , r"\}|\)|\]" => ">"), "," => ":")
 
 basename(f::Function) = Base.nameof(f)
 basename(f::Core.IntrinsicFunction) = Symbol(unsafe_string(ccall(:jl_intrinsic_name, Cstring, (Core.IntrinsicFunction,), f)))
@@ -545,14 +506,7 @@ end
 
 function code_wasm(m::ModuleState, name::Symbol, A, cinfo::CodeInfo, R)
   ircode = Core.Compiler.inflate_ir(cinfo)
-  # @show ircode.argtypes
-  # @show A.parameters
-  for i in 2:length(ircode.argtypes)
-    ircode.argtypes[i] = A.parameters[i-1]
-  end
-  # ircode.argtypes[2:length(ircode.argtypes)] = A.parameters[1:end]
-  # ircode.argtypes = [t for t in A.parameters]#vcat(A, R)
-  # @show ircode.argtypes
+  ircode.argtypes[2:end] = [t for t in A.parameters]
 
   # This is being calculated twice but once the register allocation is changed
   # it won't work anymore anyway.
