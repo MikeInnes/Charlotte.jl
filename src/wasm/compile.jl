@@ -205,7 +205,7 @@ for (j, w) in vcat(int_binary_ops, float_binary_ops)
   end
 end
 
-wasmfunc(f, xs...) = wasmfuncs[f](xs...)
+wasmfunc(f, xs...) = (g = deepcopy(wasmfuncs); g[f](xs...))
 
 wasmcalls = Dict()
 
@@ -366,9 +366,11 @@ wasmcalls[GlobalRef(Base, :not_int)] = function (i, x)
   Expr(:call, Op(WType(T), :xor), x, T(-1))
 end
 
-wasmcall(i, f, xs...) =
-  haskey(wasmcalls, f) ? wasmcalls[f](i, xs...) :
+wasmcall(i, f, xs...) = begin
+  g = deepcopy(wasmcalls)
+  haskey(g, f) ? g[f](i, xs...) :
   Expr(:call, wasmfunc(f, exprtype.(i, xs)...), xs...)
+end
 
 isprimitive(x) = false
 isprimitive(x::GlobalRef) =
@@ -413,7 +415,6 @@ function lower_invoke(m::ModuleState, args)
   # This lowers the function invoked. `args` is the Any[] from the :invoke Expr.
   # If the function has not been compiled, compile it.
   # Generate the WASM call.
-  println("just invoke the function")
   tt = argtypes(args[1])
   name = createfunname(args[1], tt)
   if !haskey(m.funcs, name)

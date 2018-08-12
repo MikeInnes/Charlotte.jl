@@ -120,10 +120,6 @@ function arrayref_i32_(xs)
   return xs[10]
 end
 
-@show sumarr(Int32[1,2,3])
-
-println("NEW MODULE!!")
-
 m = wasm_module([arrayref_i32_ => Tuple{Vector{Int32}}, sum2arr => Tuple{Array{Int32, 2}}, sumarr => Tuple{Array{Int32, 1}}]) |> mergeWithBase
 # write("this.wast", string(m))
 # write("this.wasm", getModule(m))
@@ -134,7 +130,6 @@ m = wasm_module([arrayref_i32_ => Tuple{Vector{Int32}}, sum2arr => Tuple{Array{I
 
 defs = interpret_module_dict(m)
 # @show defs
-@show keys(defs)
 p = defs[:allocate](100)
 defs[:arrayset_i32](p, 3, 9) == p
 @test defs[:arrayref_i32](p, 9) == 3
