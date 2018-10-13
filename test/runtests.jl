@@ -20,16 +20,16 @@ end
 m = wasm_module([mathfun => Tuple{Float64},
                  mathfun2 => Tuple{Float64, Float64}])
 
-# These fail now.
-# function docos(x)
-#     ccall((:jscos, "imports"), Float64, (Float64,), x)
-# end
-# m1 = wasm_module([docos => Tuple{Float64}])
-#
-# function docos2(x)
-#     ccall((:jscos, "imports"), Float64, (Float64,Float64), x, 33.3)
-# end
-# m2 = wasm_module([docos2 => Tuple{Float64}])
+function docos(x)
+    ccall((:jscos, "imports"), Float64, (Float64,), x)
+end
+m1 = wasm_module([docos => Tuple{Float64}])
+
+function docos2(x)
+    ccall((:jscos, "imports"), Float64, (Float64,Float64), x, 33.3)
+end
+m2 = wasm_module([docos2 => Tuple{Float64}])
+
 
 # BROKEN stuff to try to test memory
 # const s = "hello"
