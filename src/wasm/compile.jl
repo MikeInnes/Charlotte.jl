@@ -369,7 +369,7 @@ end
 wasmcall(i, f, xs...) = begin
   g = deepcopy(wasmcalls)
   haskey(g, f) ? g[f](i, xs...) :
-  Expr(:call, wasmfunc(f, exprtype.(i, xs)...), xs...)
+  Expr(:call, wasmfunc(f, exprtype.(Ref(i), xs)...), xs...)
 end
 
 isprimitive(x) = false
