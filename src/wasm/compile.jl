@@ -437,7 +437,6 @@ function lower_new(m::ModuleState, args)
 end
 
 
-# This doesn't work anymore
 function lower_ccall(m::ModuleState, args)
   @show args
   fnname = args[1].args[2].value
