@@ -121,8 +121,8 @@ function arrayref_i32_(xs)
 end
 
 m = wasm_module([arrayref_i32_ => Tuple{Vector{Int32}}, sum2arr => Tuple{Array{Int32, 2}}, sumarr => Tuple{Array{Int32, 1}}]) |> mergeWithBase
-# write("this.wast", string(m))
-# write("this.wasm", getModule(m))
+write("this.wast", string(m))
+write("this.wasm", WebAssembly.getModule(m))
 # s = State(m)
 # push!(s.fs, :func_0 => (2, (xs...) -> [show(("error: ", xs))]))
 # efs = filter(e->e.typ==:func, m.exports)
