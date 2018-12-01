@@ -369,7 +369,7 @@ end
 wasmcall(i, f, xs...) = begin
   g = deepcopy(wasmcalls)
   haskey(g, f) ? g[f](i, xs...) :
-  Expr(:call, wasmfunc(f, exprtype.(i, xs)...), xs...)
+  Expr(:call, wasmfunc(f, exprtype.(Ref(i), xs)...), xs...)
 end
 
 isprimitive(x) = false
@@ -437,12 +437,13 @@ function lower_new(m::ModuleState, args)
 end
 
 
-# This doesn't work anymore
 function lower_ccall(m::ModuleState, args)
-  (fnname, env) = args[1]
+  @show args
+  fnname = args[1].args[2].value
+  env = Symbol(args[1].args[3])
   name = Symbol(env, :_, fnname)
-  m.imports[name] = Import(env, fnname, :func, map(WType, args[3]), WType(args[2]))
-  return Expr(:call, Call(name), args[4:2:end]...)
+  m.imports[name] = Import(env, fnname, name, :func, FuncType(WType[WType(x) for x in args[3]], WType[WType(args[2])]))
+  return Expr(:call, Call(name), args[6:2:end]...)
 end
 
 argtypes(x::Core.MethodInstance) = Tuple{x.specTypes.parameters[2:end]...}

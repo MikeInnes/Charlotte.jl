@@ -20,16 +20,16 @@ end
 m = wasm_module([mathfun => Tuple{Float64},
                  mathfun2 => Tuple{Float64, Float64}])
 
-# These fail now.
-# function docos(x)
-#     ccall((:jscos, "imports"), Float64, (Float64,), x)
-# end
-# m1 = wasm_module([docos => Tuple{Float64}])
-#
-# function docos2(x)
-#     ccall((:jscos, "imports"), Float64, (Float64,Float64), x, 33.3)
-# end
-# m2 = wasm_module([docos2 => Tuple{Float64}])
+function docos(x)
+    ccall((:jscos, "imports"), Float64, (Float64,), x)
+end
+m1 = wasm_module([docos => Tuple{Float64}])
+
+function docos2(x)
+    ccall((:jscos, "imports"), Float64, (Float64,Float64), x, 33.3)
+end
+m2 = wasm_module([docos2 => Tuple{Float64}])
+
 
 # BROKEN stuff to try to test memory
 # const s = "hello"
@@ -121,8 +121,8 @@ function arrayref_i32_(xs)
 end
 
 m = wasm_module([arrayref_i32_ => Tuple{Vector{Int32}}, sum2arr => Tuple{Array{Int32, 2}}, sumarr => Tuple{Array{Int32, 1}}]) |> mergeWithBase
-# write("this.wast", string(m))
-# write("this.wasm", getModule(m))
+write("this.wast", string(m))
+write("this.wasm", WebAssembly.getModule(m))
 # s = State(m)
 # push!(s.fs, :func_0 => (2, (xs...) -> [show(("error: ", xs))]))
 # efs = filter(e->e.typ==:func, m.exports)
