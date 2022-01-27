@@ -1,5 +1,7 @@
 # Charlotte
 
+*This package was a not-particularly-functional prototype that hasn't been touched since 2018. I'm not sure how you got here, but if you want to run Julia on wasm, you should probably go [here](https://github.com/Keno/julia-wasm).*
+
 ```julia
 Pkg.clone("https://github.com/MikeInnes/WebAssembly.jl")
 Pkg.clone("https://github.com/MikeInnes/Charlotte.jl")
